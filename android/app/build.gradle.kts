@@ -18,8 +18,13 @@ android {
         versionName = "0.2"
 
         ndk {
-            // Native ALAC/FLAC decoder; only arm64 devices are targeted.
-            abiFilters += listOf("arm64-v8a")
+            // Native ALAC/FLAC decoder and the FLAC encoder; arm64 devices are the target.
+            // -PencodeSmoke adds x86_64 so the delivery encoders can be exercised on an
+            // emulator (the guest environment itself still needs arm64, this only runs
+            // EncodeSmoke).
+            val abis = mutableListOf("arm64-v8a")
+            if (project.hasProperty("encodeSmoke")) abis.add("x86_64")
+            abiFilters += abis
         }
     }
 

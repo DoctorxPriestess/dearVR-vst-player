@@ -13,6 +13,12 @@ Everything here is a developer utility; none of it ships inside the APK.
 | `tools/build.sh clean` | Remove build outputs. |
 | `tools/gate.sh [check\|full]` | Serialized compile gate for concurrent editors. |
 
+`tools/build.sh assemble` plus `gradle -PencodeSmoke assembleStandaloneDebug` builds an
+x86_64 APK for an emulator, so the delivery encoders (`core/Encode`, the FLAC encoder in
+`libvstdecode.so`) can be exercised without an arm64 device: push a file named `encode-selftest`
+into the app's `files/` directory and the next start encodes everything in `files/selftest` once and
+writes `files/encode-selftest.txt` (see `core/EncodeSmoke`).
+
 ## Layout
 
 ```

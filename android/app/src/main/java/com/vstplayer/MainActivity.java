@@ -80,6 +80,9 @@ public class MainActivity extends Activity implements LibraryView.Host {
         super.onCreate(b);
         Diag.init(this);
         Diag.log("shell onCreate pid=" + android.os.Process.myPid());
+        // Debug only: encodes files/selftest once when the marker file is present. No-op
+        // otherwise, and it never touches the engine (see core/EncodeSmoke).
+        com.vstplayer.core.EncodeSmoke.runIfRequested(this);
         Player.get().attach(this);
         // Loads the reference index once per process and binds every track to the virtual path the
         // player, the cover loader and the notification use (so a SAF track keeps its metadata even

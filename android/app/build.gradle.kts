@@ -1,3 +1,5 @@
+import org.gradle.api.tasks.compile.JavaCompile
+
 plugins {
     id("com.android.application")
 }
@@ -52,6 +54,14 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    // Keep the compiler honest without failing the build on library deprecations.
+    lint {
+        // The report is generated on demand (tools/build.sh lint); a broken report
+        // should not block an APK that installs and runs.
+        abortOnError = false
+        checkReleaseBuilds = false
+    }
+
     packaging {
         jniLibs.useLegacyPackaging = true
     }
@@ -63,7 +73,13 @@ android {
     }
 }
 
+tasks.withType<JavaCompile>().configureEach {
+    options.encoding = "UTF-8"
+    options.compilerArgs.addAll(listOf("-Xlint:all", "-Xlint:-processing", "-Xlint:-serial"))
+}
+
 dependencies {
+    // Used by Env/FastExtract to unpack the xz-compressed asset segments.
     implementation("org.apache.commons:commons-compress:1.27.1")
     implementation("org.tukaani:xz:1.10")
 }

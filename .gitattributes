@@ -1,0 +1,11 @@
+# Normalise line endings so the tree stays stable across Windows/Linux checkouts.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.png binary
+*.jpg binary
+*.jar binary
+*.so binary
+*.bin binary
+*.wav binary
+*.pack binary

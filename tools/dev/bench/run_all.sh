@@ -1,8 +1,8 @@
 #!/bin/bash
-# run the whole benchmark matrix into tools/_bench/results.log
+# run the whole benchmark matrix into tools/dev/bench/results.log
 export MSYS_NO_PATHCONV=1
 ROOT="D:/AI Misc/vst3_player"
-LOG="$ROOT/tools/_bench/results.log"
+LOG="$ROOT/tools/dev/bench/results.log"
 ADB=C:/adb/platform-tools/adb.exe
 DEV=192.168.101.154:5555
 : > "$LOG"
@@ -11,7 +11,7 @@ run_one() {
   local label="$1" seg="$2" eng="$3" mode="$4"
   : > /tmp/r.txt
   if [ "$mode" = "bg" ]; then
-    bash "$ROOT/tools/_bench/run.sh" "$seg" "$eng" 900 "$label" >> /tmp/r.txt 2>&1 &
+    bash "$ROOT/tools/dev/bench/run.sh" "$seg" "$eng" 900 "$label" >> /tmp/r.txt 2>&1 &
     local pid=$!
     sleep 30
     $ADB -s $DEV shell input keyevent KEYCODE_HOME >/dev/null 2>&1
@@ -22,7 +22,7 @@ run_one() {
     $ADB -s $DEV shell "dumpsys notification --noredact | grep -c com.vstp" >> "$LOG" 2>&1
     wait $pid
   else
-    bash "$ROOT/tools/_bench/run.sh" "$seg" "$eng" 900 "$label" >> /tmp/r.txt 2>&1
+    bash "$ROOT/tools/dev/bench/run.sh" "$seg" "$eng" 900 "$label" >> /tmp/r.txt 2>&1
   fi
   cat /tmp/r.txt >> "$LOG"
   echo "----" >> "$LOG"

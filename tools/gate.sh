@@ -17,8 +17,8 @@ MODE=${1:-check}
 
 if [ -n "${GRADLE:-}" ]; then
     GRADLE_CMD="$GRADLE"
-elif [ -x "$ROOT/tools/gradle-8.14.3/bin/gradle.bat" ]; then
-    GRADLE_CMD="$ROOT/tools/gradle-8.14.3/bin/gradle.bat"
+elif [ -f "$ROOT/tools/gradle-8.14.3/bin/gradle" ]; then
+    GRADLE_CMD="$ROOT/tools/gradle-8.14.3/bin/gradle"
 elif [ -x "$ROOT/android/gradlew" ]; then
     GRADLE_CMD="$ROOT/android/gradlew"
 else

@@ -1,12 +1,15 @@
 #!/bin/bash
-# 首次抽取基准：删掉 .ready 标记触发重新解压，测 env extraction 耗时与完整性
+# First-run extraction benchmark: drop the .ready markers, relaunch, and time
+# the asset extraction plus the file count that lands in files/glibc.
+#
+# Usage: tools/bench/extractbench.sh
 set -u
 export MSYS_NO_PATHCONV=1
-ADB=${ADB:-C:/adb/platform-tools/adb.exe}
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+ADB=${ADB:-adb}
 DEV=${DEV:-192.168.101.154:5555}
 PKG=com.vstp
 ACT=$PKG/com.vstplayer.MainActivity
-VER=${1:-3}
 
 "$ADB" -s "$DEV" connect "$DEV" >/dev/null 2>&1
 "$ADB" -s "$DEV" shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1
@@ -19,8 +22,8 @@ BEFORE=$("$ADB" -s "$DEV" exec-out run-as $PKG wc -l files/diag.log 2>/dev/null 
 T0=$(date +%s)
 
 for _ in $(seq 1 300); do
-  sleep 1
-  if "$ADB" -s "$DEV" exec-out run-as $PKG cat files/diag.log 2>/dev/null | tail -n +$((BEFORE+1)) | grep -q 'env extraction done'; then break; fi
+    sleep 1
+    if "$ADB" -s "$DEV" exec-out run-as $PKG cat files/diag.log 2>/dev/null | tail -n +$((BEFORE+1)) | grep -q 'env extraction done'; then break; fi
 done
 T1=$(date +%s)
 

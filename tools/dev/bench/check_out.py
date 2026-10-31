@@ -1,5 +1,5 @@
 import wave, os, math, numpy as np
-D = r"D:/AI Misc/vst3_player/tools/_bench/out"
+D = r"D:/AI Misc/vst3_player/tools/dev/bench/out"
 for n in ("src_alac24_vst", "src_alac16_vst", "src_aac_vst", "src_flac24_vst", "src_flac16_vst"):
     p = os.path.join(D, n + ".wav")
     w = wave.open(p, "rb")

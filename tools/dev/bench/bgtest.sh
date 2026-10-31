@@ -2,7 +2,7 @@
 export MSYS_NO_PATHCONV=1
 ADB=C:/adb/platform-tools/adb.exe; S=-s; DEV=192.168.101.154:5555
 ROOT="D:/AI Misc/vst3_player"
-CONF="$ROOT/tools/_bench/bootrun.conf"
+CONF="$ROOT/tools/dev/bench/bootrun.conf"
 printf "decode.selftest=0\r\nrender.autorun=1\r\nrender.segment=120\r\nrender.engines=2\r\n" > "$CONF"
 $ADB $S $DEV push "$CONF" /data/local/tmp/br.txt >/dev/null 2>&1
 $ADB $S $DEV shell "run-as com.vstp sh -c 'cat /data/local/tmp/br.txt > files/boot.conf; rm -f files/diag.log'"

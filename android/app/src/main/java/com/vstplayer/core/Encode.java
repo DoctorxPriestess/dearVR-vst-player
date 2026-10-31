@@ -58,9 +58,9 @@ public final class Encode {
      * tell them apart. The extension is only a fallback for files the extractor
      * refuses, e.g. a container whose codec this device has no parser for.
      */
-    public static Kind kindOf(File src) {
+    public static Kind kindOf(Context ctx, File src) {
         if (src == null) return Kind.WAV;
-        String mime = mimeOf(src);
+        String mime = mimeOf(ctx, src);
         if (mime != null) {
             if (mime.startsWith("audio/alac") || mime.startsWith("audio/flac")
                     || mime.startsWith("audio/x-flac") || mime.startsWith("audio/raw")
@@ -96,7 +96,7 @@ public final class Encode {
      */
     public static File compress(Context ctx, File src, File wav) {
         if (wav == null || !wav.isFile()) return wav;
-        Kind kind = kindOf(src);
+        Kind kind = kindOf(ctx, src);
         if (kind == Kind.WAV) return wav;
 
         Wav.Info pcm = Wav.probe(wav);
@@ -128,7 +128,7 @@ public final class Encode {
             return out;
         }
 
-        int bitrate = clamp(bitrateOf(src, pcm), AAC_MIN, AAC_MAX);
+        int bitrate = clamp(bitrateOf(ctx, src), AAC_MIN, AAC_MAX);
         File out = sibling(wav, ".m4a");
         try {
             aac(pcm, wav, out, bitrate);
@@ -143,17 +143,17 @@ public final class Encode {
     }
 
     /** Bitrate of a lossy source in bits per second, or 0 when unknown. */
-    public static int bitrateOf(File src, Wav.Info pcm) {
+    public static int bitrateOf(Context ctx, File src) {
         int bps = 0;
-        MediaExtractor ex = new MediaExtractor();
+        MediaExtractor ex = extractorFor(ctx, src);
         try {
-            ex.setDataSource(src.getAbsolutePath());
+            if (ex == null) return 0;
             for (int i = 0; i < ex.getTrackCount(); i++) {
                 MediaFormat f = ex.getTrackFormat(i);
                 String m = f.getString(MediaFormat.KEY_MIME);
                 if (m == null || !m.startsWith("audio/")) continue;
                 if (f.containsKey(MediaFormat.KEY_BIT_RATE)) bps = f.getInteger(MediaFormat.KEY_BIT_RATE);
-                if (bps <= 0 && f.containsKey(MediaFormat.KEY_DURATION) && pcm != null) {
+                if (bps <= 0 && f.containsKey(MediaFormat.KEY_DURATION) && src.length() > 0) {
                     // Size over duration: correct for CBR, an average for VBR, which is
                     // exactly what an AAC encoder wants to be told anyway.
                     long us = f.getLong(MediaFormat.KEY_DURATION);
@@ -164,9 +164,37 @@ public final class Encode {
         } catch (Exception e) {
             Diag.log("bitrate: " + src.getName() + ": " + e);
         } finally {
-            ex.release();
+            if (ex != null) ex.release();
         }
         return bps;
+    }
+
+    /**
+     * Extractor for a source file, local or a SAF reference.
+     *
+     * <p>A library entry only exists as a {@code content://} Uri, so opening it by path
+     * fails; that used to be harmless (the extension decided the format) but it also lost
+     * the bitrate, and a lossy track then fell back to 192 kbit/s instead of its own.
+     */
+    private static MediaExtractor extractorFor(Context ctx, File src) {
+        MediaExtractor ex = new MediaExtractor();
+        try {
+            if (src.isFile()) {
+                ex.setDataSource(src.getAbsolutePath());
+                return ex;
+            }
+            LibraryRef.Track track = LibraryRef.get(ctx).trackByVirtual(src);
+            if (track == null) {
+                ex.release();
+                return null;
+            }
+            ex.setDataSource(ctx, android.net.Uri.parse(track.uri), null);
+            return ex;
+        } catch (Exception e) {
+            Diag.log("extractor: " + src.getName() + ": " + e);
+            ex.release();
+            return null;
+        }
     }
 
     private static int clamp(int v, int lo, int hi) {
@@ -180,10 +208,10 @@ public final class Encode {
         return new File(wav.getParentFile(), base + ext);
     }
 
-    private static String mimeOf(File src) {
-        MediaExtractor ex = new MediaExtractor();
+    private static String mimeOf(Context ctx, File src) {
+        MediaExtractor ex = extractorFor(ctx, src);
         try {
-            ex.setDataSource(src.getAbsolutePath());
+            if (ex == null) return null;
             for (int i = 0; i < ex.getTrackCount(); i++) {
                 String m = ex.getTrackFormat(i).getString(MediaFormat.KEY_MIME);
                 if (m != null && m.startsWith("audio/")) return m;
@@ -191,7 +219,7 @@ public final class Encode {
         } catch (Exception ignored) {
             // Not a container the platform knows: the caller falls back to the extension.
         } finally {
-            ex.release();
+            if (ex != null) ex.release();
         }
         return null;
     }

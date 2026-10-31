@@ -11,6 +11,10 @@ It achieves this by running a full multi-tier guest compatibility stack directly
 
 The release APK is completely self-contained (~280 MB): it carries the compressed guest rootfs, Box64, Wine, and the plugin payload as assets, extracting them on first launch with zero additional downloads required.
 
+> **Download the [latest release](../../releases/latest) only.** `v0.2` and `v0.3` shipped a
+> crash — every render of a batch failed, and retrying the batch killed the app with an NPE in
+> the engine reader. Both are marked as pre-releases, carry a warning, and are not supported.
+
 ```
 +-----------------------------------------------------------------------------------+
 | Android App (Java / Hand-written Views / targetSdk 28 / No AndroidX)              |
@@ -235,6 +239,10 @@ Refer to `docs/BENCHMARKS.md` for performance baselines across reference devices
 `PRoot` (glibc 虚拟环境) $\rightarrow$ `Box64` (x86_64 指令转译至 ARM64) $\rightarrow$ `Wine` (Windows API 模拟层) $\rightarrow$ 轻量级无头 **JUCE VST3 宿主** (`vstrender_juce.exe`)，并通过行级 IPC 管道由 Android 应用进行低延迟精准控制。
 
 发布版 APK 具备完全自包含能力（约 280 MB）：内置 Linux rootfs、Box64、Wine 及插件资源分卷，首次运行时在后台自动解压，无需联网二次下载。
+
+> **只下载[最新发布版](../../releases/latest)。** `v0.2` 与 `v0.3` 都存在闪退缺陷：整批渲染
+> 会全部失败，反复重试后 App 因引擎读取线程空指针直接崩溃。这两个版本已标记为 pre-release
+> 并加了警告，不再提供支持。
 
 ---
 

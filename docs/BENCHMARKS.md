@@ -87,6 +87,11 @@ frame count** for the same scripted interaction rather than the percentage alone
 ls -l android/app/build/outputs/apk/standalone/debug/app-standalone-debug.apk
 ```
 
-Baseline: **278 920 586 bytes**; optimized: **278 983 952 bytes** (+63 KB, +0.02 %). ~298 MB of that is
+Baseline: **278 920 586 bytes**.
+
+Optimized builds land between **278 926 910** and **278 983 952 bytes** depending on whether the build
+is incremental or from a clean tree (the ~57 KB spread comes from dex/zip layout and timestamps, not
+from code). Relative to the baseline that is +0.002 % … +0.02 %, i.e. no meaningful change: ~298 MB
+of the APK is the already-compressed environment assets. ~298 MB of that is
 the unpacked environment assets; the assets are already xz-compressed and are stored uncompressed
 in the APK (`noCompress "bin"`), so gzip would only waste install time.

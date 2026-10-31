@@ -28,6 +28,7 @@ import com.vstplayer.core.EngineService;
 import com.vstplayer.core.Export;
 import com.vstplayer.core.LibraryRef;
 import com.vstplayer.core.Param;
+import com.vstplayer.core.Io;
 import com.vstplayer.core.Player;
 import com.vstplayer.core.Segment;
 import com.vstplayer.core.Paths;
@@ -1608,7 +1609,8 @@ public class VstView extends LinearLayout {
         }
         File dir = new File(refBatchDir, String.valueOf(refLocals.size()));
         if (!dir.isDirectory() && !dir.mkdirs()) throw new java.io.IOException("无法创建 " + dir);
-        File out = new File(dir, src.getName());
+        // ASCII only: the guest opens this path, and it decodes our command bytes as Latin-1.
+        File out = new File(dir, "ref" + refLocals.size() + extOf(src.getName()));
         long bytes = copyTo(out, android.net.Uri.parse(track.uri));
         refLocals.put(src, out);
         Diag.log("ref staged " + track.rel + " -> " + out + " " + bytes + "B");
@@ -1678,6 +1680,40 @@ public class VstView extends LinearLayout {
         dir.delete();
     }
 
+    /** True when every character is plain ASCII, i.e. a path the guest is able to open. */
+    private static boolean isAscii(String s) {
+        for (int i = 0; i < s.length(); i++) if (s.charAt(i) > 0x7F) return false;
+        return true;
+    }
+
+    /** Extension of a name when it is ASCII, otherwise nothing (the reader sniffs the content). */
+    private static String extOf(String name) {
+        int dot = name.lastIndexOf(0x2E);
+        if (dot <= 0 || name.length() - dot > 8) return "";
+        String ext = name.substring(dot);
+        return isAscii(ext) ? ext : "";
+    }
+
+    /**
+     * Renames a single piece render from its ASCII work name onto the name the user sees.
+     *
+     * <p>The host cannot create files under a non-ASCII path, so an unsplit render writes
+     * {@code o<id>_<nanos>.wav} and gets its display name here. Returns the file to export: the
+     * guest copy if the rename fails, because the audio itself is already correct.
+     */
+    private File promote(FileJob fj) {
+        File guest = fj.outs[0];
+        if (guest == null || guest.equals(fj.finalOut) || !guest.isFile()) return fj.finalOut;
+        if (fj.finalOut.exists() && !fj.finalOut.delete()) {
+            Diag.log("promote: cannot replace " + fj.finalOut.getName()
+                    + ", exporting " + guest.getName());
+            return guest;
+        }
+        if (guest.renameTo(fj.finalOut)) return fj.finalOut;
+        Diag.log("promote failed: " + guest.getName() + " -> " + fj.finalOut.getName());
+        return guest;
+    }
+
     /** Decodes and slices one source file on the prep thread; returns null when it is unusable. */
     private FileJob plan(int id, File src, File segDir, int segSec, int preSec, Context app)
             throws Exception {
@@ -1739,9 +1775,24 @@ public class VstView extends LinearLayout {
             } else if (decoded) {
                 pcm.delete();      // only measured it; the renderer reads the original
             }
-            fj.outs[0] = finalOut;
+            // The host parses our UTF-8 command line as Latin-1, so every path it opens has to be
+            // pure ASCII: a Chinese source name or folder arrives as mojibake and the render dies
+            // within milliseconds ("cannot read" / "cannot create output"). Stage a plain copy.
+            if (nativeFormat && !isAscii(input.getAbsolutePath())) {
+                File staged = new File(segDir,
+                        "in" + id + "_" + Long.toHexString(System.nanoTime()) + extOf(name));
+                Io.copy(new java.io.FileInputStream(input), new java.io.FileOutputStream(staged));
+                Diag.log("staged non-ascii source " + name + " -> " + staged.getName());
+                input = staged;
+                tempIn = staged;
+            }
+            // Same for the output: the guest creates it, so it writes an ASCII name inside the work
+            // tree and promote() renames it to the display name on this side.
+            File guestOut = new File(segDir,
+                    "o" + id + "_" + Long.toHexString(System.nanoTime()) + ".wav");
+            fj.outs[0] = guestOut;
             fj.skips[0] = 0;
-            fj.jobs[0] = new Job(id, 0, input, finalOut, tempIn);
+            fj.jobs[0] = new Job(id, 0, input, guestOut, tempIn);
         } else {
             for (int s = 0; s < n; s++) {
                 long start = s * segFrames;
@@ -1849,12 +1900,14 @@ public class VstView extends LinearLayout {
                     cleanupSlices(fj);
                     markFileDone(fj.id);
                     cleanupRef(fj.src);
+                    failedFiles++;
                     setStatusProgress("失败：" + msg);
                 }
             } else if (fj.direct()) {
                 markFileDone(fj.id);
                 cleanupRef(fj.src);
-                if (ok) exportThenNext(fj.finalOut);
+                if (ok) exportThenNext(promote(fj));
+                else failedFiles++;   // a whole file that never rendered is a lost file
             } else if (fj.done >= fj.outs.length) {
                 stitch(fj);
             }

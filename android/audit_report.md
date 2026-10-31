@@ -1,0 +1,327 @@
+# VST Player (com.vstp) Android Java 审计报告
+
+- 审计范围：`android/app/src/main/java/com/vstplayer/` 全部 23 个 Java 文件，共 5120 行
+  （MainActivity.java + core/{App,Diag,Env,Engine,EngineService,Vst,Param,Player,Playlists,Lyrics,Tags,Export} + ui/{Ui,Icon,Slider,HomeView,DetailPage,CoverMorph,TrackList,LibraryView,PlaylistPage,VstView}）
+- 审计性质：**只读审计**，未修改任何源码
+- 行号基准：2026-10-30 02:5x 的当前工作树（`core/Engine.java` 212 行、`core/Env.java` 350 行、`core/Vst.java` 374 行、`MainActivity.java` 471 行、`core/Diag.java` 64 行）。审阅时若这几个文件继续被改，行号可能漂移，**改动后请以符号名（方法名/语句）定位，不要只认行号**。审计期间 `core/Diag.java`、`core/Engine.java`、`core/Vst.java`、`MainActivity.java` 被并行修改，本报告中的行号已按修改后的文件逐条复核（`Diag.java` 已改为常驻 FileOutputStream + 4MB 轮转，「每行 open/write/close」结论已失效并剔除）
+- 证据标注：**FACT** = 直接代码/命令证据；**INFERENCE** = 由代码推导的量级或时序推断；**UNKNOWN** = 未上机验证
+- 技术约束（已确认）：纯 framework、无 androidx、全部自定义 View / 手写矢量图、minSdk 24 / targetSdk 28、UI 不指定字体
+
+---
+
+## P0 — 崩溃 / 数据错误
+
+### P0-1 `ui/VstView.java:529`（回调链 `core/Vst.java:176`）
+- **问题**：渲染完成后在**主线程**执行 `Export.copy(...)`，把整首 WAV 经 `ContentResolver` 写入 SAF 目录。
+- **为什么**：`Vst.finish()` 用 `ui.post(...)` 把 cb 抛回主线程；`Export.java:65-71` 是 64KB 阻塞循环复制，而输出是完整曲目 WAV（几十 MB），主线程被占住数秒 → 输入分发超时 → ANR。
+- **最小修法**：把 `Export.copy` 放进单线程 executor，完成后 `ui.post(renderNext)`；`renderNext` 里不要在回调内直接做 IO。
+- **证据**：FACT（代码路径）/ INFERENCE（ANR 时长取决于文件大小）
+
+### P0-2 `core/Playlists.java:55-80`（写入 70-76，读取 30-53）
+- **问题**：`save()` 直接 `new FileOutputStream(file)` 覆盖写，无 tmp+rename、无 fsync；`load()` 解析失败时 `catch(Throwable)` 后**返回空表**。
+- **为什么**：写入中途被杀/掉电会留下截断 JSON → 下次 `load()` 静默返回空 → 任一次重命名/拖拽保存就以空表为基础覆盖，全部播放列表丢失。
+- **最小修法**：写 `playlists.json.tmp` → `getFD().sync()` → `renameTo`；解析失败时保留旧文件并置「损坏」标志，禁止在解析失败的基础上 `save`。
+- **证据**：FACT（写序与异常处理）/ INFERENCE（截断窗口）
+
+---
+
+## P1 — 明显卡顿与耗电
+
+### P1-1 `ui/DetailPage.java:393-403`、`ui/DetailPage.java:444`、`ui/HomeView.java:172-181`
+- **问题**：一次切歌，主线程发生 **3 次 `Tags.read()`**（394、444、HomeView:175）+ **2 次 1024px `decodeByteArray`**（DetailPage:400、HomeView:176），随后 `bg.setArt()` 再做 5 级模糊。
+- **为什么**：`onTrack` 由 `Player` post 到主线程，全部同步执行；同一封面被 Home 与 Detail 各解码一次。每次切歌必然掉帧。
+- **最小修法**：封面/标签统一走一个后台单线程（按 File 去重 + generation token 取消），解码完成后 `ui.post(setArt)`；标签结果在 Detail 与 Home 间共享一次；Home 缩略图用 256px。
+- **证据**：FACT
+
+### P1-2 `ui/CoverMorph.java:103-134`、`ui/CoverMorph.java:227-275`
+- **问题**：`setArt()` 在调用线程同步生成 4 个模糊级，`gauss()` 是 Java 双重循环（1024 封面 → 384/384/270/128 四张，约 1.7e7 像素 × 4 通道加权）。
+- **为什么**：与 P1-1 叠加，单次切歌主线程数百 ms 级停顿。
+- **最小修法**：只保留 2-3 级并全部移到后台；或退化为「缩到 1/16 → 双线性放大」近似，避免手写卷积。
+- **证据**：INFERENCE（量级按代码参数推算，未上机 profiling）
+
+### P1-3 `ui/VstView.java:289-334`
+- **问题**：`ParamAdapter.getView` 完全不用 `reuse` 参数，每行新建约 7 个 View（含 `Icon` 的 vector drawable + `Slider`）。
+- **为什么**：ListView 复用被废掉，滚动 36 个参数时持续 GC 与 drawable 解析。
+- **最小修法**：用 `convertView` + ViewHolder（`row.tag` 存 3 个控件引用），只更新文本与 `Slider.setValue`。
+- **证据**：FACT
+
+### P1-4 `ui/VstView.java:251-256` → `ui/VstView.java:269-282`
+- **问题**：每次 `SET` 应答 `applyText` 都 `ui.post(onParams)` → `onParams()` 先 `rebuild()` 再 `notifyDataSetChanged()`。
+- **为什么**：拖一次滑杆 = 整表重绑 + 与 P1-3 叠加成两次全量重建。
+- **最小修法**：`onParams()` 只在参数**集合**变化时 `notifyDataSetChanged()`；数值刷新只改可见行 TextView。
+- **证据**：FACT
+
+### P1-5 `ui/TrackList.java:124-134`（触发点 91-94、185-193、314-328）
+- **问题**：选中切换、切歌、拖拽落地全部走 `rebuild()`：`removeAllViews()` + 逐行重建（每行含 Icon/Slider 级控件）。
+- **为什么**：列表越长越卡，而拖拽/多选是高频交互。
+- **最小修法**：选中态就地 `setBackground`；只有 `setFiles` 真正改变集合时才全量重建。
+- **证据**：FACT
+
+### P1-6 `ui/LibraryView.java:70-144`（`Playlists.load` 在 82-83，`listFiles` 在 75-76）
+- **问题**：每次 `show(1)` 都调用 `library.refresh()`：主线程两次 `listFiles` + `Playlists.load`（文件 IO + JSON，且 `synchronized` 是类锁）+ 为每个文件 eager 建整行。
+- **为什么**：切 tab 就是一次全量重建，文件多时明显停顿，与 P0-2 共享同一把类锁。
+- **最小修法**：列表缓存 + 后台线程刷新（`refresh()` 只置脏并 `post` 结果），或改成 RecyclerView + 分页。
+- **证据**：FACT
+
+### P1-7 `core/Player.java:37-48`（`postDelayed(this, 250)` 在 46）
+- **问题**：播放中 250ms 常驻 Handler 轮询；`HomeView.onProgress`(221-228) / `DetailPage.onProgress`(362-370) 每 tick 都 `setText` + `Slider.setValue` + `invalidate`。
+- **为什么**：4Hz 唤醒 + 重绘，页面不可见（详情关闭 / 切 tab / 后台）时仍在跑，是典型的「轮询而非帧回调」耗电点。
+- **最小修法**：只在承载页 `onWindowVisibility`/`onResume` 期间轮询；间隔放 500ms-1s；隐藏时 `removeCallbacks(tick)` 并保留进度快照。
+- **证据**：FACT（常驻轮询）/ INFERENCE（后台耗电占比）
+
+### P1-8 `core/Vst.java:207-210`
+- **问题**：`onExit()` 只 `setState(OFF,"引擎已停止")`，不清 `current`/`queue`、不给 in-flight 的 `Cmd.cb` 回调。
+- **为什么**：渲染中引擎崩掉 → `busy()` 永久 true，`VstView.renderNext` 的 cb 永不返回，UI 卡在「渲染中 x%」，队列后续文件静默不跑。
+- **最小修法**：`onExit` 内 `finish(current,false,"引擎退出")` + `queue.clear()` + `setState(FAILED,...)`。
+- **证据**：FACT
+
+---
+
+## P2 — 可维护性 / 潜伏问题
+
+### P2-1 `core/Lyrics.java:53-87`（缓存键 275-278）
+- **问题**：`load()` 无请求代际号，旧回调会覆盖新歌歌词；缓存键是 `norm(title)|norm(artist)` 的 `hashCode`，可碰撞串歌；失败不写缓存 → 每首歌都联网重试。
+- **为什么**：快速切歌时歌词串台；离线/无匹配场景反复发请求（流量与唤醒）。
+- **最小修法**：加 `generation` 递增校验后再 `renderLyrics`；失败写 0 字节缓存并带 TTL；键改用 SHA-256 前 16 位。
+- **证据**：FACT
+
+### P2-2 `ui/Icon.java:83`、`ui/CoverMorph.java:212-222`
+- **问题**：`Icon.onDraw` 每帧 `new PorterDuffColorFilter`；`CoverMorph.feather` 每帧 `new` 4 个 `LinearGradient`。
+- **为什么**：都在 onDraw 内分配；详情页 430ms 形变动画期间每帧分配 + 全屏 `saveLayer`（182 行）。
+- **最小修法**：`Icon` 在 `tint()` 里缓存 filter；`feather` 的 gradient 只在尺寸/feather 值变化时重建。
+- **证据**：FACT
+
+### P2-3 `ui/DetailPage.java:511`（配合 454-486）
+- **问题**：切行时 `t.setTextSize(on?21:17)` 触发 `requestLayout`，ScrollView 重新测量；每首歌一次性建 100+ 行、每行 2-3 个 View。
+- **为什么**：每切一行歌词就有一次布局，滚动时抖动。
+- **最小修法**：两套固定样式只切颜色/alpha（避免 setTextSize），或改 `setScaleX/Y` + pivot；行可懒加载。
+- **证据**：FACT
+
+### P2-4 `ui/LibraryView.java:239-244`
+- **问题**：每行 `new SimpleDateFormat` + `new Date`。
+- **为什么**：`SimpleDateFormat` 构造极贵，百行列表 → 明显 GC 与耗时。
+- **最小修法**：静态 `ThreadLocal<SimpleDateFormat>` 或手写 `MM-dd HH:mm` 拼接。
+- **证据**：FACT
+
+### P2-5 `core/Engine.java:163-193`（判空退出的 190-192）
+- **问题**：`pump()` 退出后无条件 `ready=false` + `onExit(code)`，没有 `if (p != proc) return;` 守卫。
+- **为什么**：一旦出现两个 pump（`Vst.restart()` 存在）旧进程的退出会把新引擎判为未就绪；但 `restart()` **全仓无调用**，所以当前不可达。
+- **最小修法**：加 `p != proc` 早退；`ready` 由当前 proc 独占。
+- **证据**：FACT（缺守卫）/ UNKNOWN（现状是否可触发）
+
+### P2-6 `MainActivity.java`（471 行，全文件无 `onDestroy`/`onStop`/`onPause`）、`core/Player.java:64`
+- **问题**：无任何注销：`Player.setListener` 持有的匿名 listener 捕获 Activity；`MediaPlayer`、proot 子进程在 Activity finish 后继续跑；`detail` 字段常驻使 `CoverMorph` 的约 6MB 位图长期驻留。
+- **为什么**：进程被杀前一直占内存；若将来去掉 `configChanges` 会变成真实泄漏。
+- **最小修法**：`onDestroy` 里 `Player.get().setListener(null)`、`Vst.get().setListener(null)`、`detail` 位图 `release()`。
+- **证据**：FACT
+
+### P2-7 `core/EngineService.java:11-38`（配合 Manifest 的 `WAKE_LOCK`/`FOREGROUND_SERVICE`/`service` 声明）
+- **问题**：全仓 grep 无任何 `startService`/`bindService`，Service 从未启动；`WAKE_LOCK` 权限声明但代码零使用。
+- **为什么**：分钟级离线渲染期间没有前台服务/唤醒锁兜底；同时是一整段死代码。
+- **最小修法**：渲染前后 `startForegroundService`/`stopSelf` 包住 `Vst.render`；否则删掉 Service 与两个未用权限。
+- **证据**：FACT（未启动）/ UNKNOWN（休眠对渲染的实际影响，需上机验证）
+
+### P2-8 异常吞掉：`core/Tags.java:36-38`、`MainActivity.java:462`、`core/Playlists.java:49-51`
+- **问题**：`Tags.read` `catch(Throwable)` 后返回空 `Info`（封面/时长/位深静默丢失，UI 只显示空 badge）；`displayName` 吞 cursor 异常后静默改名 `import_<ts>.wav`；`Playlists.load` 吞解析异常返回空表（见 P0-2）。
+- **为什么**：关键失败无诊断，用户只看到「没有封面/没有歌词」。
+- **最小修法**：至少 `Diag.log` 出异常类型；`Tags.read` 返回 null 或带 `error` 字段让 UI 区分「无标签」与「读失败」。
+- **证据**：FACT
+
+---
+
+## 附注（不计入 18 条）
+
+- 死代码：`DetailPage.Blur`(547-569)、`HomeView.parentFolder`(230)、`Player.cycleMode`(142)、`Vst.fetchAgain`(64)、`Vst.busy()`、`TrackList.selectAll` 均无引用。
+- `while ((n = in.read(buf)) > 0)` 在 `read()` 返回 0 时会死循环（InputStream 契约允许 0）：`core/Env.java:347`、`core/Lyrics.java:208`、`core/Export.java:70`、`MainActivity.java:441`，建议改 `while ((n = in.read(buf)) >= 0)` 并 `if (n > 0) out.write(...)`。
+- `ui/DetailPage.java:462` 存在重复的空判断（454-457 已 return），属可删行。
+
+---
+
+## 推荐修复批次
+
+> 前置：以下验证命令都假设 **Lead 已完成构建与安装**（本审计不运行 gradle、不 adb install）。所有命令先执行：
+>
+> ```bash
+> export MSYS_NO_PATHCONV=1
+> ADB="adb -s 192.168.101.154:5555"
+> $ADB shell svc power stayon true
+> $ADB shell input keyevent KEYCODE_WAKEUP; $ADB shell wm dismiss-keyguard
+> ```
+>
+> 通用观测手段：`$ADB shell dumpsys gfxinfo com.vstp`（Janky frames / 90th percentile）、`$ADB logcat -s VSTP`（诊断日志）、`$ADB exec-out run-as com.vstp cat files/diag.log`（带时间戳，E| 为引擎 stderr）。
+
+### A 批 —— 数据损坏 / ANR（必须修，风险低）
+
+**涉及文件（写范围）**
+- `android/app/src/main/java/com/vstplayer/ui/VstView.java`（P0-1，仅 `renderNext` 一段）
+- `android/app/src/main/java/com/vstplayer/core/Playlists.java`（P0-2，仅 `save`/`load`）
+
+**预期收益**：消除「渲染完成即 ANR」与「播放列表整体丢失」两个不可恢复故障；不触碰 UI 结构与渲染流程，回归面最小。
+
+**逐条验证**
+1. **P0-1**
+   ```bash
+   $ADB shell am force-stop com.vstp; $ADB logcat -c
+   $ADB shell am start -n com.vstp/.MainActivity
+   # 人工：VST → 渲染 → 选 1 个源音频 → 开始渲染，结束后观察
+   $ADB logcat -b events -s am_anr:V | tail -5     # 修复前应出现 com.vstp 的 am_anr
+   $ADB shell dumpsys activity anr | tail -40      # 修复后应为空
+   $ADB shell dumpsys gfxinfo com.vstp | head -20  # Janky frames 应显著下降
+   ```
+   判定：导出阶段 UI 仍可响应（滑动列表/切 tab 不冻结），且无 `am_anr` 记录。
+2. **P0-2**
+   ```bash
+   $ADB exec-out run-as com.vstp cat files/playlists.json > /tmp/pl.bak.json   # 先备份
+   $ADB shell run-as com.vstp ls -l files/                                     # 保存后不应残留 .tmp
+   # 破坏性验证（debug 可恢复）：制造截断 JSON，重启应用
+   $ADB shell run-as com.vstp sh -c 'printf "{" > files/playlists.json'
+   $ADB shell am force-stop com.vstp; $ADB shell am start -n com.vstp/.MainActivity
+   $ADB exec-out run-as com.vstp cat files/playlists.json                      # 修复前：被覆盖成空表
+   ```
+   判定：修复后不应静默覆盖为空表（应提示损坏或保留原文件），恢复：`$ADB shell run-as com.vstp sh -c 'cat > files/playlists.json'` 或用备份回灌。
+
+### B 批 —— 主线程卡顿与列表重建（感知明显）
+
+**涉及文件（写范围）**
+- `ui/DetailPage.java`（P1-1、P2-3 与 C 批重叠）
+- `ui/HomeView.java`（P1-1）
+- `ui/CoverMorph.java`（P1-2、P2-2 与 C 批重叠）
+- `ui/VstView.java`（P1-3、P1-4，与 A 批同文件——建议 A 批合入后再动）
+- `ui/TrackList.java`（P1-5）
+- `ui/LibraryView.java`（P1-6、P2-4 与 C 批重叠）
+
+**预期收益**：切歌/切 tab/滚动/多选从「主线程数百 ms 阻塞」降到单帧内；这是用户主观体感最大的一批。建议按 P1-1/P1-2（封面管线）→ P1-3/P1-4（参数列表）→ P1-5（TrackList）→ P1-6 顺序小步合入。
+
+**逐条验证**
+1. **P1-1 + P1-2**
+   ```bash
+   $ADB shell dumpsys gfxinfo com.vstp reset
+   # 人工：进详情页，连点「下一首」5 次（每次等 1s）
+   $ADB shell dumpsys gfxinfo com.vstp | sed -n '1,25p'
+   $ADB shell top -n 1 -b | grep com.vstp           # 切歌瞬间主线程 CPU 峰值
+   ```
+   判定：Janky frames 数量与最大帧耗时显著下降；切歌不再出现 >100ms 的长帧。
+2. **P1-3 + P1-4**
+   ```bash
+   $ADB shell dumpsys gfxinfo com.vstp reset
+   # 人工：VST→参数页快速上下滚动 5 秒，然后拖动一个滑杆并释放
+   $ADB shell dumpsys gfxinfo com.vstp | sed -n '1,25p'
+   $ADB shell dumpsys meminfo com.vstp | sed -n '/Views/,+3p'   # Views 数不应随滚动单调增长
+   ```
+   判定：滚动期间无持续 GC（`logcat | grep -i "GC_FOR_ALLOC"` 减少），滑杆释放后不再整表重绑。
+3. **P1-5**
+   ```bash
+   $ADB shell dumpsys gfxinfo com.vstp reset
+   # 人工：详情页点中一首 → 长按进入多选 → 连续点选/取消 10 次
+   $ADB shell dumpsys gfxinfo com.vstp | sed -n '1,25p'
+   ```
+   判定：每次点选只产生 1 帧重绘，无整表重建导致的长帧。
+4. **P1-6**
+   ```bash
+   $ADB shell dumpsys gfxinfo com.vstp reset
+   # 人工：在「主页/资料库/VST」之间来回切 6 次
+   $ADB shell dumpsys gfxinfo com.vstp | sed -n '1,25p'
+   $ADB shell top -n 1 -b | grep com.vstp
+   ```
+   判定：切到资料库的帧耗时下降；文件数多时不再线性增长停顿。
+
+### C 批 —— 功耗与可维护性
+
+**涉及文件（写范围）**
+- `core/Player.java`（P1-7、P2-6）
+- `core/Vst.java`（P1-8）
+- `core/Engine.java`（P2-5）
+- `core/Lyrics.java`（P2-1）
+- `ui/Icon.java`（P2-2）
+- `ui/DetailPage.java`、`ui/CoverMorph.java`、`ui/LibraryView.java`（P2-2/P2-3/P2-4，**与 B 批重叠，必须排在 B 批之后或同一人负责**）
+- `MainActivity.java`（P2-6、P2-8）
+- `core/EngineService.java` + `android/app/src/main/AndroidManifest.xml`（P2-7）
+- `core/Tags.java`（P2-8）
+
+**预期收益**：播放/后台期间的无效唤醒与重绘减少；引擎异常退出可自恢复；删除死代码与未用权限，降低后续维护成本。风险最低但收益偏体验/长期。
+
+**逐条验证**
+1. **P1-7（轮询）**
+   ```bash
+   $ADB shell dumpsys batterystats --reset
+   # 人工：播放一首 10 分钟音频，然后灭屏放置 10 分钟
+   $ADB shell dumpsys batterystats --charged com.vstp | sed -n '/Wake locks/,+8p'
+   $ADB shell dumpsys power | grep -i -E "mWakefulness|Display Power"
+   ```
+   判定：后台/灭屏期间 `Wake locks` 与 CPU 时间下降；`diag.log` 不应出现持续 250ms 级活动。
+2. **P1-8（引擎异常退出）**
+   ```bash
+   # 渲染进行中杀掉引擎子进程
+   $ADB shell ps -A | grep -E "proot|vstrender"
+   $ADB shell run-as com.vstp kill <上面查到的 pid>
+   ```
+   判定：修复前 UI 永远停在「渲染中 x%」；修复后应立刻显示失败并把队列剩余文件继续跑完/结束。
+3. **P2-5（stale pump 守卫）**
+   ```bash
+   # 代码级验证为主（restart() 目前无调用）；若临时加 debug 入口调用 restart：
+   $ADB exec-out run-as com.vstp cat files/diag.log | grep -E "engine READY|engine exit"
+   ```
+   判定：新引擎 READY 之后不应再出现旧进程的 `engine exit` 把状态清零。
+4. **P2-1（歌词串台/重复联网）**
+   ```bash
+   $ADB logcat -c; $ADB logcat -s VSTP &
+   # 人工：快速连续切 3 首不同歌曲（每首 <2s）
+   $ADB exec-out run-as com.vstp cat files/diag.log | tail -20
+   ```
+   判定：最终显示的歌词与最后切到的歌曲一致；同一首歌第二次播放不再发起网络请求（磁盘缓存命中）。
+5. **P2-2（onDraw 分配）**
+   ```bash
+   $ADB shell dumpsys gfxinfo com.vstp reset
+   # 人工：打开详情页形变动画（点封面进入 2-3 次）
+   $ADB shell dumpsys gfxinfo com.vstp | sed -n '1,25p'
+   $ADB shell dumpsys meminfo com.vstp | grep -E "Dalvik Heap|Native Heap"
+   ```
+   判定：动画期间 Dalvik Heap 不再每帧上升；帧耗时下降。
+6. **P2-3（歌词行 setTextSize）**
+   ```bash
+   $ADB shell dumpsys gfxinfo com.vstp reset
+   # 人工：播放带 LRC 的曲目 30 秒，让歌词自动跟随
+   $ADB shell dumpsys gfxinfo com.vstp | sed -n '1,25p'
+   ```
+   判定：歌词行切换时的帧耗时不出现尖峰。
+7. **P2-4（每行 SimpleDateFormat）**
+   ```bash
+   $ADB shell dumpsys gfxinfo com.vstp reset
+   $ADB shell am start -n com.vstp/.MainActivity   # 直接进资料库（大目录）
+   $ADB shell dumpsys gfxinfo com.vstp | sed -n '1,25p'
+   ```
+   判定：进入资料库首帧耗时下降（行数越多越明显）。
+8. **P2-6（无 onDestroy / 监听器与位图驻留）**
+   ```bash
+   $ADB shell am start -n com.vstp/.MainActivity
+   $ADB shell dumpsys meminfo com.vstp | sed -n '/Views/,+3p'
+   $ADB shell input keyevent KEYCODE_BACK      # 退出 Activity
+   $ADB shell pidof com.vstp                    # 现状：进程仍在（引擎/播放器继续跑）
+   $ADB shell dumpsys meminfo com.vstp | sed -n '/Views/,+3p'
+   $ADB shell dumpsys audio | grep -i -c "state:started"   # 音频 track 是否仍占用
+   ```
+   判定：修复后进程正常退出（或至少 Views 归零、MediaPlayer 释放、无 started track）。
+9. **P2-7（前台服务 / 唤醒锁）**
+   ```bash
+   $ADB shell dumpsys activity services com.vstp | grep -i EngineService   # 现状：无
+   $ADB shell dumpsys power | grep -i wake
+   # 渲染中灭屏，观察渲染是否继续推进
+   $ADB shell input keyevent KEYCODE_SLEEP
+   sleep 60; $ADB exec-out run-as com.vstp cat files/diag.log | tail -5    # 看 PROG 是否增长
+   ```
+   判定：若灭屏后 PROG 停滞 → 证明需要前台服务/唤醒锁；修复后灭屏渲染仍能推进且通知栏出现前台通知。
+10. **P2-8（吞异常）**
+    ```bash
+    # 放入一个损坏的 FLAC/WAV 到源目录后点播放
+    $ADB logcat -s VSTP | grep -iE "tags failed|lyrics failed|playlists load failed"
+    ```
+    判定：修复后坏文件应留下明确诊断行，UI 能区分「无标签」与「读取失败」。
+
+---
+
+### 批次与写范围冲突提示
+
+- `ui/VstView.java`、`ui/DetailPage.java`、`ui/CoverMorph.java`、`ui/LibraryView.java` 跨批出现，建议：**A 批（VstView.renderNext）先合入** → **B 批独占 DetailPage/CoverMorph/HomeView/TrackList/LibraryView** → **C 批再做残留条项**。
+- `core/Vst.java` 仅 C 批（P1-8）涉及，`core/Engine.java`、`core/Player.java` 仅 C 批，可与 A 批并行。
+- `MainActivity.java` 与 `AndroidManifest.xml` 仅 C 批涉及。
+- 若按人分工：A 批 1 人（core/Playlists.java + VstView 一段）、B 批 1 人（ui/ 六个文件）、C 批 1 人（core/ 四个文件 + MainActivity/Manifest/EngineService），三批写范围无交集即可并行。

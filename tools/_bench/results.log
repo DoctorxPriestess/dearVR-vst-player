@@ -1,0 +1,24 @@
+[single_core] seg=0 eng=1
+07:28:30.844 autorun: 1 file(s)
+07:28:30.845 render batch: 1 files, lanes=1, segment=0s preroll=10s
+07:28:30.855 prepared long20.wav: 2ch/24bit/48000Hz, 1200.0s -> 1 slice(s) +1ms
+07:32:10.491 batch done: files=1 slices=1 lanes=1 total +219647ms
+----
+[seg120_e1] seg=120 eng=1
+07:32:25.129 autorun: 1 file(s)
+07:32:25.131 render batch: 1 files, lanes=1, segment=120s preroll=10s
+07:32:25.515 prepared long20.wav: 2ch/24bit/48000Hz, 1200.0s -> 10 slice(s) +378ms
+07:36:22.597 joined 10 slices -> long20_vst.wav +471ms
+07:36:22.702 batch done: files=1 slices=10 lanes=1 total +237572ms
+----
+[seg180_e1] seg=180 eng=1
+07:36:35.413 autorun: 1 file(s)
+07:36:35.415 render batch: 1 files, lanes=1, segment=180s preroll=10s
+07:36:35.725 prepared long20.wav: 2ch/24bit/48000Hz, 1200.0s -> 7 slice(s) +304ms
+07:40:27.348 joined 7 slices -> long20_vst.wav +437ms
+07:40:27.451 batch done: files=1 slices=7 lanes=1 total +232037ms
+----
+[seg120_e2_bg] foreground service state:
+    isForeground=true foregroundId=3 types=0x00000001 foregroundNoti=Notification(channel=vstplayer shortcut=null contentView=null vibrate=null sound=null defaults=0 flags=ONGOING_EVENT|ONLY_ALERT_ONCE|FOREGROUND_SERVICE color=0x00000000 category=progress vis=PUBLIC internalType=0 internalPriority=0 internalGroupPriority=0 internalFlag=0)
+[seg120_e2_bg] notification record:
+13

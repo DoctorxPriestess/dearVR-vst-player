@@ -1,0 +1,29 @@
+[seg180_e2] seg=180 eng=2
+07:56:45.523 autorun: 1 file(s)
+07:56:45.525 render batch: 1 files, lanes=2, segment=180s preroll=10s
+07:56:45.901 prepared long20.wav: 2ch/24bit/48000Hz, 1200.0s -> 7 slice(s) +369ms
+07:58:52.634 joined 7 slices -> long20_vst.wav +413ms
+07:58:52.735 batch done: files=1 slices=7 lanes=2 total +127211ms
+----
+[seg300_e2] seg=300 eng=2
+07:59:05.293 autorun: 1 file(s)
+07:59:05.294 render batch: 1 files, lanes=2, segment=300s preroll=10s
+07:59:05.614 prepared long20.wav: 2ch/24bit/48000Hz, 1200.0s -> 4 slice(s) +309ms
+08:01:00.356 joined 4 slices -> long20_vst.wav +429ms
+08:01:00.462 batch done: files=1 slices=4 lanes=2 total +115169ms
+----
+[seg120_e3] seg=120 eng=3
+08:01:14.839 autorun: 1 file(s)
+08:01:14.840 render batch: 1 files, lanes=3, segment=120s preroll=10s
+08:01:15.180 prepared long20.wav: 2ch/24bit/48000Hz, 1200.0s -> 10 slice(s) +326ms
+08:02:49.040 joined 10 slices -> long20_vst.wav +396ms
+08:02:49.145 batch done: files=1 slices=10 lanes=3 total +94305ms
+----
+[seg180_e3] seg=180 eng=3
+08:03:02.562 autorun: 1 file(s)
+08:03:02.563 render batch: 1 files, lanes=3, segment=180s preroll=10s
+08:03:02.900 prepared long20.wav: 2ch/24bit/48000Hz, 1200.0s -> 7 slice(s) +332ms
+08:04:35.077 joined 7 slices -> long20_vst.wav +438ms
+08:04:35.179 batch done: files=1 slices=7 lanes=3 total +92616ms
+----
+ALL_DONE

@@ -284,8 +284,12 @@ public class Engine {
         }
         spawning = false;
         Diag.log("engine spawn +" + (Diag.now() - tBoot) + "ms");
-        stdin = proc.getOutputStream();
-        reader = new Thread(this::pump, "engine-reader");
+        // The reader owns the process it was started for. Reading the field instead let a stop()
+        // that lands in the window between the fork and the thread start null it out, and the
+        // reader then died with an NPE on a process it never had.
+        final Process started = proc;
+        stdin = started.getOutputStream();
+        reader = new Thread(() -> pump(started), "engine-reader");
         reader.setDaemon(true);
         reader.start();
     }
@@ -469,8 +473,8 @@ public class Engine {
         }
     }
 
-    private void pump() {
-        Process p = proc;
+    private void pump(Process p) {
+        if (p == null) return;
         try (BufferedReader br = new BufferedReader(
                 new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
             String line;

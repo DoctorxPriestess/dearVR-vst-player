@@ -1274,6 +1274,8 @@ public class VstView extends LinearLayout {
     private static final int DEFAULT_PREROLL_SECONDS = 10;
 
     private int laneCount;
+    /** Helper lanes fork once the first file is ready to render, never before. */
+    private boolean lanesStarted;
     private boolean[] laneBusy = new boolean[1];
     private boolean batchRunning;
     /** Set by the stop button: every queued/running job and the prepare pipeline give up. */
@@ -1333,6 +1335,40 @@ public class VstView extends LinearLayout {
     private File refBatchDir;
     private android.os.PowerManager.WakeLock renderWake;
 
+    /**
+     * Starts the helper lanes, once per batch.
+     *
+     * <p>Every lane is another wine guest, so they are forked for work that exists: the first
+     * source that prepared cleanly triggers this. A batch where nothing survives prepare must not
+     * pay for eight guests that never render anything.
+     */
+    private void startLanes() {
+        if (lanesStarted || laneCount <= 1) return;
+        lanesStarted = true;
+        for (int i = 1; i < laneCount; i++) {
+            final int lane = i;
+            vst.setOnLaneReady(lane, () -> {
+                // Helpers share one wine prefix, so replaying 36 SET| commands into two guests at
+                // the same instant wedges the wineserver; the syncs are therefore serialised.
+                syncQueue.add(lane);
+                nextLaneSync();
+                // A guest that stops answering must not idle the batch: after this long its share
+                // goes to the lanes that do answer.
+                uiDelays.postDelayed(() -> {
+                    if (!laneSynced[lane] && !laneDead[lane]) {
+                        laneDead[lane] = true;
+                        Diag.log("engine" + lane + " param sync timeout; lane dropped");
+                        if (syncBusy == lane) { syncBusy = -1; }
+                        syncQueue.remove(Integer.valueOf(lane));
+                        nextLaneSync();
+                        pump();
+                    }
+                }, 45000);
+            });
+            vst.startHelper(lane);
+        }
+    }
+
     private void startRender() {
         if (vst.state() != Vst.READY) { toast("引擎未就绪"); return; }
         if (selected.isEmpty()) { toast("请选择至少一个源音频"); return; }
@@ -1378,6 +1414,7 @@ public class VstView extends LinearLayout {
         }
         if (batchOutLabel != null) Diag.log("batch output: " + batchOutDir);
         laneCount = 1 + helperLanes();
+        lanesStarted = false;
         laneBusy = new boolean[laneCount];
         laneSynced = new boolean[laneCount];
         laneDead = new boolean[laneCount];
@@ -1388,28 +1425,9 @@ public class VstView extends LinearLayout {
         Diag.log("render batch: " + totalFiles + " files, lanes=" + laneCount
                 + ", segment=" + segSec + "s preroll=" + preSec + "s");
         keepAlive(true, "准备渲染 " + totalFiles + " 个文件");
-        for (int i = 1; i < laneCount; i++) {
-            final int lane = i;
-            vst.setOnLaneReady(lane, () -> {
-                // Helpers share one wine prefix, so replaying 36 SET| commands into two guests at
-                // the same instant wedges the wineserver; the syncs are therefore serialised.
-                syncQueue.add(lane);
-                nextLaneSync();
-                // A guest that stops answering must not idle the batch: after this long its share
-                // goes to the lanes that do answer.
-                uiDelays.postDelayed(() -> {
-                    if (!laneSynced[lane] && !laneDead[lane]) {
-                        laneDead[lane] = true;
-                        Diag.log("engine" + lane + " param sync timeout; lane dropped");
-                        if (syncBusy == lane) { syncBusy = -1; }
-                        syncQueue.remove(Integer.valueOf(lane));
-                        nextLaneSync();
-                        pump();
-                    }
-                }, 45000);
-            });
-            vst.startHelper(lane);
-        }
+        // Helper lanes fork from startLanes(), i.e. only once a file has actually prepared: a
+        // batch whose sources cannot be opened used to fork eight wine guests for nothing, and
+        // tapping 渲染 again a few times left dozens of them booting at once.
 
         final Context app = getContext().getApplicationContext();
         final java.util.List<File> files = new java.util.ArrayList<>(selected);
@@ -1425,7 +1443,7 @@ public class VstView extends LinearLayout {
                     fj = plan(id, localize(f), segDir, segSec, preSec, app);
                 } catch (Exception e) {
                     Diag.log("prepare failed " + f.getName() + ": " + e);
-                    err = e.getMessage() == null ? e.toString() : e.getMessage();
+                    err = explain(e);
                 }
                 final FileJob res = fj;
                 final String bad = err;
@@ -1816,6 +1834,22 @@ public class VstView extends LinearLayout {
         return fj;
     }
 
+    /**
+     * One line for the screen out of a prepare failure.
+     *
+     * <p>A library entry that only exists as a {@code content://} Uri fails with the platform's
+     * own words ("Failed to determine if … is child of …") once the folder behind it is renamed or
+     * deleted, which reads like a decoder bug. That case is a dead link and says so.
+     */
+    private static String explain(Exception e) {
+        String m = e.getMessage() == null ? e.toString() : e.getMessage();
+        if (m.contains("Failed to determine") || m.contains("Missing file")
+                || e instanceof java.io.FileNotFoundException) {
+            return "源文件无法打开（可能已被移动或删除）";
+        }
+        return m;
+    }
+
     private void onPrepared(FileJob fj, String error, File src) {
         if (stopping) return;
         preparedFiles++;
@@ -1828,6 +1862,7 @@ public class VstView extends LinearLayout {
                 retryFiles.add(src);
             }
         } else {
+            startLanes();
             totalSegments += fj.outs.length;
             fileJobs.put(fj.id, fj);
             for (Job j : fj.jobs) if (j != null) pending.add(j);

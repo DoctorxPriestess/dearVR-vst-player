@@ -56,14 +56,19 @@ static jint nd_jni_decode(JNIEnv *env, jclass cls, jstring in, jstring out,
         return (jint)ND_ERR_OPEN;
     }
 
+    /* audit #8: when GetStringUTFChars fails the JVM has already raised an
+     * OutOfMemoryError.  Without clearing it the Java caller never sees the
+     * documented negative error code. */
     cin = (*env)->GetStringUTFChars(env, in, NULL);
     if (!cin) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
         nd_jni_store_error("out of memory converting input path");
         return (jint)ND_ERR_OPEN;
     }
     cout = (*env)->GetStringUTFChars(env, out, NULL);
     if (!cout) {
         (*env)->ReleaseStringUTFChars(env, in, cin);
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
         nd_jni_store_error("out of memory converting output path");
         return (jint)ND_ERR_OPEN;
     }

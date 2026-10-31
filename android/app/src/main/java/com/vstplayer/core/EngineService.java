@@ -66,6 +66,9 @@ public class EngineService extends Service {
         }
     }
 
+    // The two-argument Notification.Builder constructor is only reachable on API < 26, where
+    // channels do not exist yet; minSdk is 24, so both branches have to stay.
+    @SuppressWarnings("deprecation")
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String text = intent == null ? "渲染中" : intent.getStringExtra("text");
@@ -97,6 +100,8 @@ public class EngineService extends Service {
         return START_NOT_STICKY;
     }
 
+    // stopForeground(boolean) is the pre-API-24 spelling; both branches have to stay for minSdk 24.
+    @SuppressWarnings("deprecation")
     @Override
     public void onDestroy() {
         running = false;

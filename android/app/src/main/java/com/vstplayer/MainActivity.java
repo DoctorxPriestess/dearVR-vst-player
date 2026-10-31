@@ -72,6 +72,9 @@ public class MainActivity extends Activity implements LibraryView.Host {
     private int tab = -1;
     private int navInset = -1;
 
+    // getSystemWindowInset*() is deprecated in favour of WindowInsetsCompat, which would pull in
+    // androidx.core; minSdk 24 makes the old accessors the portable choice.
+    @SuppressWarnings("deprecation")
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -169,6 +172,24 @@ public class MainActivity extends Activity implements LibraryView.Host {
     }
 
     @Override
+    protected void onStart() {
+        super.onStart();
+        // The transport tick only needs 4 Hz while the UI is on screen; in the background it
+        // backs off to 1 Hz and stops waking the main thread for a progress bar nobody sees.
+        Player.get().setUiVisible(true);
+    }
+
+    @Override
+    protected void onStop() {
+        // Dropping the blurred backdrop ladder (~5.8 MB of bitmaps) here instead of on every
+        // overlay close keeps re-opening the detail page pixel identical: the ladder survives
+        // as long as the app is in front, and the memory comes back when it is not.
+        if (detail != null) detail.releaseArt();
+        Player.get().setUiVisible(false);
+        super.onStop();
+    }
+
+    @Override
     protected void onDestroy() {
         // Only a real close frees the engine (~400 MB of wine); a HOME press keeps it warm.
         if (isFinishing() && !Player.get().isPlaying() && !Vst.get().isRendering()) {
@@ -200,25 +221,24 @@ public class MainActivity extends Activity implements LibraryView.Host {
         if (idx == tab) return;
         Diag.log("tab " + idx);
         tab = idx;
-        content.removeAllViews();
+        final View page;
         switch (idx) {
             case 0:
                 if (home == null) {
                     home = new HomeView(this);
                     home.setOnOpenDetail(this::openDetail);
                 }
-                content.addView(home);
                 File t = Player.get().track();
                 if (t != null) {
                     home.onTrack(t, Player.get().index(), Player.get().queue().size());
                     home.onState(Player.get().isPlaying());
                 }
                 home.setHeader(Player.get().label().isEmpty() ? "现在播放" : "现在播放 · " + Player.get().label());
+                page = home;
                 break;
             case 1:
                 if (library == null) library = new LibraryView(this, this);
-                content.addView(library);
-                library.refresh();
+                page = library;
                 break;
             default:
                 if (vstView == null) {
@@ -226,9 +246,17 @@ public class MainActivity extends Activity implements LibraryView.Host {
                     vstView.onState(Vst.get().state(), Vst.get().stateLabel());
                     vstView.onParams();
                 }
-                content.addView(vstView);
+                page = vstView;
                 break;
         }
+        // Pages stay attached and are only hidden. Re-adding them made every tab switch measure and
+        // lay out the whole page again, even though nothing about it had changed.
+        if (page.getParent() != content) content.addView(page);
+        page.setVisibility(View.VISIBLE);
+        hidePage(home, page);
+        hidePage(library, page);
+        hidePage(vstView, page);
+        if (idx == 1) library.refresh();
         for (int i = 0; i < nav.getChildCount(); i++) {
             LinearLayout item = (LinearLayout) nav.getChildAt(i);
             Icon ic = (Icon) item.getChildAt(0);
@@ -237,6 +265,21 @@ public class MainActivity extends Activity implements LibraryView.Host {
             ic.tint(on ? Ui.ACC : Ui.SUB);
             t.setTextColor(on ? Ui.ACC : Ui.SUB);
         }
+    }
+
+    /** Hides one inactive page; focus is dropped first so the soft keyboard does not outlive it. */
+    private static void hidePage(View candidate, View shown) {
+        if (candidate == null || candidate == shown) return;
+        clearFocusDeep(candidate);
+        candidate.setVisibility(View.GONE);
+    }
+
+    private static void clearFocusDeep(View v) {
+        if (v == null) return;
+        if (v.isFocused()) v.clearFocus();
+        if (!(v instanceof ViewGroup)) return;
+        ViewGroup group = (ViewGroup) v;
+        for (int i = 0; i < group.getChildCount(); i++) clearFocusDeep(group.getChildAt(i));
     }
 
     // ------------------------------------------------------------ overlays
@@ -356,6 +399,7 @@ public class MainActivity extends Activity implements LibraryView.Host {
 
     @Override public void onOpenPlaylist(Playlists.Item item) { openPlaylist(item); }
 
+    @SuppressWarnings("deprecation") // OnBackPressedDispatcher lives in androidx.activity
     @Override public void onBackPressed() {
         if (playlistPage != null) {
             overlay.removeAllViews();
@@ -688,7 +732,8 @@ public class MainActivity extends Activity implements LibraryView.Host {
                 int n = 0, bad = 0;
                 if (files != null) {
                     for (File f : files) {
-                        if (!f.isFile() || !f.getName().toLowerCase(java.util.Locale.US).endsWith(".vstpreset")) continue;
+                        if (!f.isFile()) continue;
+                        if (!f.getName().toLowerCase(java.util.Locale.US).endsWith(".vstpreset")) continue;
                         try {
                             Export.copyToTree(this, tree, f, f.getName(), "application/octet-stream", null);
                             n++;

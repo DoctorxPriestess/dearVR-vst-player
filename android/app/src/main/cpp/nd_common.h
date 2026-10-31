@@ -65,17 +65,48 @@ static inline int nd_av_log2(uint32_t v)
 
 /* ---------------------------------------------------------------- bits */
 
+/* audit #17: sliding 64-bit window bit reader.
+ *
+ * Invariant: `win` is left aligned and holds the winbits bits that start at
+ * br->bitpos.  A refill reloads up to 8 bytes from br->bitpos (8 byte loads)
+ * and happens about once per 64 consumed bits; the old version ran that same
+ * 8-byte loop on every single nd_br_get() call. */
 typedef struct nd_br {
     const uint8_t *data;
     size_t         nbits;
     size_t         bitpos;
+    uint64_t       win;
+    unsigned       winbits;
 } nd_br;
+
+static inline void nd_br_refill(nd_br *br)
+{
+    size_t   bit    = br->bitpos;
+    size_t   byte   = bit >> 3;
+    unsigned bitoff = (unsigned)(bit & 7u);
+    size_t   avail  = (br->nbits >> 3) - byte;
+    unsigned take   = avail < 8u ? (unsigned)avail : 8u;
+    uint64_t acc    = 0;
+    size_t   loaded, valid;
+    unsigned i;
+
+    for (i = 0; i < take; i++)
+        acc |= (uint64_t)br->data[byte + i] << (56u - 8u * i);
+
+    br->win = acc << bitoff;
+    loaded  = (size_t)take * 8u;
+    loaded  = loaded > bitoff ? loaded - bitoff : 0;
+    valid   = br->nbits - bit;
+    br->winbits = (unsigned)(loaded < valid ? loaded : valid);
+}
 
 static inline void nd_br_init(nd_br *br, const uint8_t *data, size_t nbytes)
 {
-    br->data   = data;
-    br->nbits  = nbytes * 8u;
-    br->bitpos = 0;
+    br->data    = data;
+    br->nbits   = nbytes * 8u;
+    br->bitpos  = 0;
+    br->win     = 0;
+    br->winbits = 0;
 }
 
 static inline size_t nd_br_bits_left(const nd_br *br)
@@ -83,44 +114,38 @@ static inline size_t nd_br_bits_left(const nd_br *br)
     return br->bitpos < br->nbits ? br->nbits - br->bitpos : 0;
 }
 
+/* Consume n bits already present in the window (n <= winbits). */
+static inline void nd_br_drop(nd_br *br, unsigned n)
+{
+    br->win = (n >= 64u) ? 0u : (br->win << n);   /* n == 64 would be UB */
+    br->winbits -= n;
+    br->bitpos  += n;
+}
+
 /* Read n (0..32) bits, MSB first. Returns 0 on success, -1 on exhaustion. */
 static inline int nd_br_get(nd_br *br, int n, uint32_t *out)
 {
-    size_t bit, byte, avail;
-    uint64_t acc = 0;
-    unsigned bitoff, i, take;
+    const unsigned un = (unsigned)n;
 
     if (n <= 0) { *out = 0; return 0; }
-    bit = br->bitpos;
-    if (bit > br->nbits || (size_t)n > br->nbits - bit) return -1;
-    byte   = bit >> 3;
-    bitoff = (unsigned)(bit & 7u);
-    avail  = (br->nbits >> 3) - byte;
-    take   = avail < 8u ? (unsigned)avail : 8u;
-    for (i = 0; i < take; i++)
-        acc |= (uint64_t)br->data[byte + i] << (56u - 8u * i);
-    *out = (uint32_t)((acc << bitoff) >> (64 - (unsigned)n));
-    br->bitpos = bit + (size_t)n;
+    if ((size_t)n > nd_br_bits_left(br)) return -1;
+    if (br->winbits < un) nd_br_refill(br);
+    if (br->winbits < un) return -1;
+    *out = (uint32_t)(br->win >> (64u - un));
+    nd_br_drop(br, un);
     return 0;
 }
 
 /* Peek n (0..32) bits without advancing. */
-static inline int nd_br_peek(const nd_br *br, int n, uint32_t *out)
+static inline int nd_br_peek(nd_br *br, int n, uint32_t *out)
 {
-    size_t bit, byte, avail;
-    uint64_t acc = 0;
-    unsigned bitoff, i, take;
+    const unsigned un = (unsigned)n;
 
     if (n <= 0) { *out = 0; return 0; }
-    bit = br->bitpos;
-    if (bit > br->nbits || (size_t)n > br->nbits - bit) return -1;
-    byte   = bit >> 3;
-    bitoff = (unsigned)(bit & 7u);
-    avail  = (br->nbits >> 3) - byte;
-    take   = avail < 8u ? (unsigned)avail : 8u;
-    for (i = 0; i < take; i++)
-        acc |= (uint64_t)br->data[byte + i] << (56u - 8u * i);
-    *out = (uint32_t)((acc << bitoff) >> (64 - (unsigned)n));
+    if ((size_t)n > nd_br_bits_left(br)) return -1;
+    if (br->winbits < un) nd_br_refill(br);
+    if (br->winbits < un) return -1;
+    *out = (uint32_t)(br->win >> (64u - un));
     return 0;
 }
 
@@ -128,7 +153,8 @@ static inline int nd_br_peek(const nd_br *br, int n, uint32_t *out)
 static inline int nd_br_skip(nd_br *br, size_t n)
 {
     if (br->bitpos > br->nbits || n > br->nbits - br->bitpos) return -1;
-    br->bitpos += n;
+    if (n <= (size_t)br->winbits) nd_br_drop(br, (unsigned)n);
+    else { br->winbits = 0; br->bitpos += n; }
     return 0;
 }
 
@@ -138,14 +164,9 @@ static inline int nd_br_unary9(nd_br *br, int *out)
 {
     int n = 0;
     while (n < 9) {
-        uint8_t b;
-        if (br->bitpos >= br->nbits) return -1;
-        b = br->data[br->bitpos >> 3];
-        br->bitpos++;
-        if (((b >> (7u - (unsigned)((br->bitpos - 1) & 7u))) & 1u) == 0) {
-            *out = n;
-            return 0;
-        }
+        uint32_t b;
+        if (nd_br_get(br, 1, &b)) return -1;
+        if (b == 0) { *out = n; return 0; }
         n++;
     }
     *out = 9;
@@ -158,11 +179,6 @@ static inline uint32_t nd_rd_u32be(const uint8_t *p)
 {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
            ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
-}
-
-static inline uint32_t nd_rd_u24be(const uint8_t *p)
-{
-    return ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[2];
 }
 
 static inline uint16_t nd_rd_u16be(const uint8_t *p)

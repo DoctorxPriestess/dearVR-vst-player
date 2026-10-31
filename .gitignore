@@ -23,6 +23,9 @@
 *.apk
 *.hprof
 /tools/*.wav
+# host self-check output
+/tools/tests/build/
+
 # local toolchain (junction to an unpacked gradle distribution; the wrapper replaces it)
 /tools/gradle-8.14.3/
 /tools/.gate.lock/

@@ -62,10 +62,12 @@ public class HomeView extends LinearLayout implements Player.Listener {
         cover.setVisibility(View.GONE);
         final float radius = Ui.dp(c, 18);
         cover.setOutlineProvider(new ViewOutlineProvider() {
-            @Override public void getOutline(View v, Outline o) { o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), radius); }
+            @Override public void getOutline(View v, Outline o) {
+                o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), radius);
+            }
         });
         art.addView(cover, new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
-        note = new Icon(c).name("music").tint(Ui.withAlpha(0xFFFFFFFF, 0.5f)).stroke(2.2f);
+        note = new Icon(c).name("music").tint(Ui.withAlpha(0xFFFFFFFF, 0.5f));
         art.addView(note, new LinearLayout.LayoutParams(Ui.dp(c, 72), Ui.dp(c, 72)));
         final FrameLayout holder = new FrameLayout(c);
         holder.setPadding(pad, 0, pad, 0);
@@ -97,7 +99,7 @@ public class HomeView extends LinearLayout implements Player.Listener {
         addView(info);
 
         seek = new Slider(c).accent(Ui.TXT).trackColor(Ui.withAlpha(Ui.TXT, 0.22f)).thick(4f, 0f).knob(true);
-        seek.setOnChange(new Slider.OnChange() {
+        seek.onChange(new Slider.OnChange() {
             @Override public void onChanging(float v) {
                 seeking = true;
                 pos.setText(fmt((int) (durationMs * v)));
@@ -120,14 +122,14 @@ public class HomeView extends LinearLayout implements Player.Listener {
 
         LinearLayout ctl = Ui.row(c);
         ctl.setGravity(Gravity.CENTER);
-        Icon prev = new Icon(c).name("prev").tint(Ui.TXT).stroke(1.4f);
+        Icon prev = new Icon(c).name("prev").tint(Ui.TXT);
         FrameLayout playBtn = new FrameLayout(c);
         playBtn.setBackground(Ui.circle(Ui.withAlpha(Ui.TXT, 0.12f), c));
-        playIcon = new Icon(c).name("play").tint(Ui.TXT).stroke(1.4f);
+        playIcon = new Icon(c).name("play").tint(Ui.TXT);
         FrameLayout.LayoutParams ilp = new FrameLayout.LayoutParams(Ui.dp(c, 34), Ui.dp(c, 34));
         ilp.gravity = Gravity.CENTER;
         playBtn.addView(playIcon, ilp);
-        Icon next = new Icon(c).name("next").tint(Ui.TXT).stroke(1.4f);
+        Icon next = new Icon(c).name("next").tint(Ui.TXT);
         ctl.addView(prev, new LinearLayout.LayoutParams(Ui.dp(c, 56), Ui.dp(c, 56)));
         LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(Ui.dp(c, 76), Ui.dp(c, 76));
         plp.leftMargin = Ui.dp(c, 18);
@@ -231,13 +233,6 @@ public class HomeView extends LinearLayout implements Player.Listener {
             seek.setValue(fraction);
             pos.setText(fmt(posMs));
         }
-    }
-
-    private static String parentFolder(File f) {
-        String p = f.getParent();
-        if (p == null) return "本地文件";
-        int i = p.lastIndexOf('/');
-        return i >= 0 ? p.substring(i + 1) : p;
     }
 
     static String fmt(int ms) {

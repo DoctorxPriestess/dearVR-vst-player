@@ -55,11 +55,26 @@ public interface Seekable extends Closeable {
         readFully(dst, 0, dst.length);
     }
 
+    /**
+     * Reads exactly {@code len} bytes.
+     *
+     * <p>{@code read} may return 0: a pipe backed provider or a descriptor that is momentarily
+     * empty. A loop that only treats -1 as end of stream then spins at 100% CPU forever without
+     * making progress, so a bounded run of empty reads turns into an IOException instead.
+     */
     default void readFully(byte[] dst, int off, int len) throws IOException {
         int done = 0;
+        int idle = 0;
         while (done < len) {
             int n = read(dst, off + done, len - done);
             if (n < 0) throw new java.io.EOFException("eof at " + done + "/" + len + " bytes");
+            if (n == 0) {
+                if (++idle > Io.MAX_ZERO_READS) {
+                    throw new IOException("no progress at " + done + "/" + len + " bytes");
+                }
+                continue;
+            }
+            idle = 0;
             done += n;
         }
     }
@@ -69,9 +84,17 @@ public interface Seekable extends Closeable {
         if (n <= 0) return new byte[0];
         byte[] buf = new byte[n];
         int done = 0;
+        int idle = 0;
         while (done < n) {
             int r = read(buf, done, n - done);
             if (r < 0) break;
+            if (r == 0) {
+                if (++idle > Io.MAX_ZERO_READS) {
+                    throw new IOException("no progress at " + done + "/" + n + " bytes");
+                }
+                continue;
+            }
+            idle = 0;
             done += r;
         }
         return done == n ? buf : Arrays.copyOf(buf, done);
@@ -186,6 +209,10 @@ final class SafSeekable implements Seekable {
             pos = 0;
         }
         this.pipe = sequential;
+        if (pipe) {
+            // See randomAccess(): the tag readers refuse this source, so say once why.
+            Diag.log("seekable: pipe source, metadata readers report no tags: " + uri);
+        }
     }
 
     private static void quietly(ParcelFileDescriptor p) {
@@ -197,7 +224,11 @@ final class SafSeekable implements Seekable {
 
     @Override public long size() { return size; }
 
-    @Override public boolean randomAccess() { return !pipe && size > 0; }
+    /**
+     * False for a pipe backed descriptor. Only the pipe matters here: a provider that reports no
+     * size but still seeks is perfectly usable, and it used to be refused as well.
+     */
+    @Override public boolean randomAccess() { return !pipe; }
 
     @Override public long position() throws IOException {
         return pipe ? pos : channel.position();
@@ -212,10 +243,20 @@ final class SafSeekable implements Seekable {
         if (target == pos) return;
         if (target < pos) throw new IOException("stream is not seekable (would rewind to " + target + ")");
         byte[] scratch = new byte[SCAN_CHUNK];
+        int idle = 0;
         while (pos < target) {
             int want = (int) Math.min(SCAN_CHUNK, target - pos);
             int n = channel.read(ByteBuffer.wrap(scratch, 0, want));
             if (n < 0) throw new java.io.EOFException("eof while skipping to " + target);
+            // A pipe can report 0 without being at end of stream; never advance blindly and
+            // never loop on it without a bound.
+            if (n == 0) {
+                if (++idle > Io.MAX_ZERO_READS) {
+                    throw new IOException("no progress skipping to " + target + " (" + pos + ")");
+                }
+                continue;
+            }
+            idle = 0;
             pos += n;
         }
     }

@@ -66,9 +66,52 @@ public class Env {
         return (ctx.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
     }
 
+    /** Guest work directories, created once and re-created after {@link #invalidateDirs()}. */
+    private File workCache;
+    private File inCache;
+    private File outCache;
+
+    /**
+     * The guest work directory, created on first use and then cached.
+     *
+     * <p>It used to create the same directory on every call, and the render queue asks for these
+     * paths once per track (twice through ReplayGain's cache key), while a ReplayGain scan asks for
+     * them once per file. They only change when the environment is rebuilt, which invalidates them.
+     */
     public File workDir() {
-        File f = new File(glibc, "opt/vstenv/work");
-        f.mkdirs();
+        synchronized (this) {
+            if (workCache == null) workCache = ensure(new File(glibc, "opt/vstenv/work"));
+            return workCache;
+        }
+    }
+
+    /** Guest input directory handed to the renderer (decoded or staged WAVs). */
+    public File inDir() {
+        synchronized (this) {
+            if (inCache == null) inCache = ensure(new File(workDir(), "in"));
+            return inCache;
+        }
+    }
+
+    /** Guest output directory the renderer writes into. */
+    public File outDir() {
+        synchronized (this) {
+            if (outCache == null) outCache = ensure(new File(workDir(), "out"));
+            return outCache;
+        }
+    }
+
+    /** Drops the cached directories so the next access re-creates them. */
+    public void invalidateDirs() {
+        synchronized (this) {
+            workCache = null;
+            inCache = null;
+            outCache = null;
+        }
+    }
+
+    private static File ensure(File f) {
+        if (!f.isDirectory()) f.mkdirs();
         return f;
     }
 
@@ -375,7 +418,7 @@ public class Env {
             TarArchiveEntry e;
             byte[] buf = new byte[1 << 16];
             String base = destRoot.getCanonicalPath();
-            while ((e = tar.getNextTarEntry()) != null) {
+            while ((e = tar.getNextEntry()) != null) {
                 File out = new File(destRoot, e.getName());
                 String canon = out.getCanonicalPath();
                 if (!canon.equals(base) && !canon.startsWith(base + File.separator)) continue;

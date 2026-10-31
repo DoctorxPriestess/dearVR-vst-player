@@ -7,7 +7,6 @@ import android.os.Looper;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -202,12 +201,13 @@ public final class Lyrics {
             if (enc != null && enc.toLowerCase(Locale.US).contains("gzip")) in = new GZIPInputStream(in);
             else if (enc != null && enc.toLowerCase(Locale.US).contains("br"))
                 throw new Exception("brotli not supported");
-            ByteArrayOutputStream bo = new ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
-            in.close();
-            return new String(bo.toByteArray(), "UTF-8");
+            String body;
+            try {
+                body = new String(Io.readAll(in), "UTF-8");
+            } finally {
+                in.close();
+            }
+            return body;
         } finally {
             c.disconnect();
         }
@@ -281,11 +281,7 @@ public final class Lyrics {
         try {
             InputStream in = new java.io.FileInputStream(f);
             try {
-                ByteArrayOutputStream bo = new ByteArrayOutputStream();
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
-                return new String(bo.toByteArray(), "UTF-8");
+                return new String(Io.readAll(in), "UTF-8");
             } finally {
                 in.close();
             }

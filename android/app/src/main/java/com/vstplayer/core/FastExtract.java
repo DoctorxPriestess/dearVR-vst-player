@@ -196,7 +196,7 @@ public final class FastExtract {
              InputStream dec = xz ? new XZInputStream(in) : new GZIPInputStream(in, BUF);
              TarArchiveInputStream tar = new TarArchiveInputStream(dec)) {
             TarArchiveEntry e;
-            while ((e = tar.getNextTarEntry()) != null) {
+            while ((e = tar.getNextEntry()) != null) {
                 applyEntry(tar, e, destRoot, base, buf, def);
             }
         }

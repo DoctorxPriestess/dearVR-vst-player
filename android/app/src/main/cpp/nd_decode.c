@@ -317,6 +317,8 @@ static int nd_decode_alac_file(const char *in, const char *out, int max_seconds,
     const nd_alac_config *cfg;
     int            rc, depth, container, lshift;
     uint64_t       limit, done = 0;
+    /* audit #3: only remove the output file if this call created it. */
+    int            out_created = 0;
 
     memset(&wav, 0, sizeof(wav));
     rc = nd_mp4_open(&m, in, err, errlen);
@@ -362,6 +364,7 @@ static int nd_decode_alac_file(const char *in, const char *out, int max_seconds,
         nd_set_err(err, errlen, "cannot create output file: %s", out);
         goto done;
     }
+    out_created = 1;
 
     limit = max_seconds > 0
                 ? (uint64_t)max_seconds * (uint64_t)cfg->sample_rate
@@ -416,7 +419,7 @@ done:
     if (m) nd_mp4_close(m);
     if (rc != ND_OK) {
         nd_wav_abort(&wav);
-        nd_remove_file(out);
+        if (out_created) nd_remove_file(out);
     }
     return rc;
 }

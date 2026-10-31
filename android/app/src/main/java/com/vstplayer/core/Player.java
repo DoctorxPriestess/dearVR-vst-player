@@ -124,7 +124,17 @@ public class Player {
         return instance;
     }
 
+    /** Position poll interval while the player UI is on screen. */
+    private static final int TICK_UI_MS = 250;
+    /**
+     * Position poll interval in the background: the notification and the media session do not
+     * need a quarter second resolution, and each tick is two binder calls into mediaserver.
+     */
+    private static final int TICK_BG_MS = 1000;
+
     private final Handler ui = new Handler(Looper.getMainLooper());
+    /** Whether the playback UI is visible; see {@link #setUiVisible(boolean)}. */
+    private volatile boolean uiVisible = true;
     private final Runnable tick = new Runnable() {
         @Override public void run() {
             MediaPlayer m = mp;
@@ -134,7 +144,7 @@ public class Player {
                     if (dur > 0 && listener != null) listener.onProgress(pos / (float) dur, pos, dur);
                 } catch (IllegalStateException ignored) { }
             }
-            if (playing) ui.postDelayed(this, 250);
+            if (playing) ui.postDelayed(this, uiVisible ? TICK_UI_MS : TICK_BG_MS);
         }
     };
 
@@ -162,6 +172,29 @@ public class Player {
     /** Application context used for the playback service and the audio wake lock. */
     public void attach(android.content.Context c) {
         if (c != null) appCtx = c.getApplicationContext();
+    }
+
+    /**
+     * Tells the player whether its playback UI is on screen; call it from
+     * {@code onResume}/{@code onPause} of the activity that shows the transport controls.
+     *
+     * <p>The position poll drives the progress bar, so it runs at
+     * {@link #TICK_UI_MS} while the UI is visible and at {@link #TICK_BG_MS} once it is not, which
+     * removes three quarters of the wakeups while playback continues in the background without
+     * changing what the notification or the media session see. Both intervals are active only while
+     * audio is actually playing.
+     *
+     * <p>Main thread recommended; safe from any thread. Turning visibility on reschedules the next
+     * tick immediately so a returning activity does not wait for the slow background interval.
+     *
+     * @param visible true when the playback UI is resumed and visible, false when it is paused
+     */
+    public void setUiVisible(boolean visible) {
+        uiVisible = visible;
+        if (visible && playing) {
+            ui.removeCallbacks(tick);
+            ui.post(tick);
+        }
     }
 
     /** Queue entries as plain files (references come back as their virtual path). */

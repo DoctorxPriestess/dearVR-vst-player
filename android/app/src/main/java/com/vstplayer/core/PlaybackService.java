@@ -127,6 +127,9 @@ public class PlaybackService extends Service {
 
     // ---------------------------------------------------------------- service
 
+    // MediaSession.FLAG_* is the pre-API-26 way to declare transport handling; the modern
+    // MediaStyle equivalent needs androidx.media, which this project deliberately avoids.
+    @SuppressWarnings("deprecation")
     @Override
     public void onCreate() {
         super.onCreate();
@@ -159,7 +162,15 @@ public class PlaybackService extends Service {
             return START_NOT_STICKY;
         }
         if (!hasContent()) {
-            // Nothing to advertise (stray intent after teardown): do not hold the process foreground.
+            // Nothing to advertise (stray intent after teardown), but this service may have been
+            // brought up with startForegroundService(): the system then requires startForeground()
+            // within five seconds and kills the process with a RemoteServiceException otherwise.
+            // Show the (brief) notification first, then tear the service down as before.
+            try {
+                startForeground(ID, buildNotification());
+            } catch (Exception e) {
+                Diag.log("foreground notification failed: " + e);
+            }
             shutdown();
             return START_NOT_STICKY;
         }
@@ -195,6 +206,8 @@ public class PlaybackService extends Service {
 
     // ---------------------------------------------------------------- session
 
+    // The FLAG_* pair below only matters below API 26; keep it there and keep the warning quiet.
+    @SuppressWarnings("deprecation")
     private void initSession() {
         session = new MediaSession(this, "VSTPlayer");
         if (Build.VERSION.SDK_INT < 26) {
@@ -337,6 +350,8 @@ public class PlaybackService extends Service {
         }
     }
 
+    // See onCreate(): the channel-less builder is the API 24/25 fallback.
+    @SuppressWarnings("deprecation")
     private Notification buildNotification() {
         File t = player == null ? null : player.track();
         boolean playing = player != null && player.isPlaying();
@@ -402,8 +417,8 @@ public class PlaybackService extends Service {
     // ---------------------------------------------------------------- text / cover
 
     private String titleFor(File t) {
-        if (t != null) return stem(t.getName());
-        return fallbackTitle == null ? "" : stem(fallbackTitle);
+        if (t != null) return Paths.stem(t.getName());
+        return fallbackTitle == null ? "" : Paths.stem(fallbackTitle);
     }
 
     private String artistFor(File t) {
@@ -418,12 +433,6 @@ public class PlaybackService extends Service {
             }
         }
         return fallbackText != null && !fallbackText.isEmpty() ? fallbackText : "VST Player";
-    }
-
-    private static String stem(String name) {
-        if (name == null) return "";
-        int dot = name.lastIndexOf('.');
-        return dot > 0 ? name.substring(0, dot) : name;
     }
 
     /**

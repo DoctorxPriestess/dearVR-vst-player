@@ -54,9 +54,19 @@ public final class RgStore {
         }
     }
 
+    /** Minimum interval between two implicit saves, in milliseconds. */
+    private static final long SAVE_MIN_INTERVAL_MS = 30_000L;
+    /** An implicit save also needs this many changed entries, so a slow scan still lands. */
+    private static final int SAVE_MIN_DIRTY = 100;
+    /** Fraction of {@link #MAX_ENTRIES} kept when the cache has to be trimmed. */
+    private static final double PRUNE_TO = 0.9;
+
     private final File file;
     private final Map<String, Entry> entries = new LinkedHashMap<String, Entry>();
     private boolean loaded;
+    /** Wall clock of the last successful save, and entries changed since then. */
+    private long lastSaveAt;
+    private int dirty;
 
     public RgStore(File json) {
         if (json == null) throw new IllegalArgumentException("json == null");
@@ -98,18 +108,20 @@ public final class RgStore {
         ensureLoaded();
         entries.put(key, new Entry(key, size, mtime, lufs, peakDb, gainDb, target,
                 System.currentTimeMillis()));
+        dirty++;
         pruneIfNeeded();
     }
 
     /** Drop one key. */
     public synchronized void remove(String key) {
         ensureLoaded();
-        if (key != null) entries.remove(key);
+        if (key != null && entries.remove(key) != null) dirty++;
     }
 
     /** Drop every entry (still requires {@link #save()} to hit the disk). */
     public synchronized void clear() {
         ensureLoaded();
+        if (!entries.isEmpty()) dirty++;
         entries.clear();
     }
 
@@ -158,8 +170,26 @@ public final class RgStore {
         }
     }
 
-    /** Persist atomically (temp file + rename). Failures are logged, never thrown. */
+    /** Persist now, atomically (temp file + rename). Failures are logged, never thrown. */
     public synchronized void save() {
+        saveSerialised();
+    }
+
+    /**
+     * Persist only when it is worth it: at least {@link #SAVE_MIN_DIRTY} new entries or
+     * {@link #SAVE_MIN_INTERVAL_MS} since the last save.
+     *
+     * <p>A scan used to rewrite (and fsync) the whole JSON every five tracks. With the cache at
+     * {@link #MAX_ENTRIES} entries that is a few megabytes per write, and a 1000 track scan wrote
+     * that a couple of hundred times for no benefit: the file is a cache, not a journal.
+     */
+    public synchronized void saveIfDue() {
+        if (dirty == 0) return;
+        long now = System.currentTimeMillis();
+        if (dirty >= SAVE_MIN_DIRTY || now - lastSaveAt >= SAVE_MIN_INTERVAL_MS) saveSerialised();
+    }
+
+    private void saveSerialised() {
         ensureLoaded();
         StringBuilder sb = new StringBuilder(entries.size() * 160 + 64);
         sb.append("{\"version\":1,\"entries\":{");
@@ -200,6 +230,8 @@ public final class RgStore {
                 }
             }
             ok = true;
+            lastSaveAt = System.currentTimeMillis();
+            dirty = 0;
         } catch (Throwable t) {
             System.err.println("RgStore: save failed: " + t);
         } finally {
@@ -221,18 +253,22 @@ public final class RgStore {
         if (!loaded) load();
     }
 
+    /**
+     * Trims the cache back to {@link #PRUNE_TO} of {@link #MAX_ENTRIES} in one pass.
+     *
+     * <p>It used to drop exactly one entry per insert, and to find it, it scanned every entry: once
+     * the cache was full, each new measurement cost a full 20000 entry sweep.
+     */
     private void pruneIfNeeded() {
-        while (entries.size() > MAX_ENTRIES) {
-            String oldest = null;
-            long at = Long.MAX_VALUE;
-            for (Entry e : entries.values()) {
-                if (e.at < at) {
-                    at = e.at;
-                    oldest = e.key;
-                }
-            }
-            if (oldest == null) return;
-            entries.remove(oldest);
+        if (entries.size() <= MAX_ENTRIES) return;
+        int keep = (int) (MAX_ENTRIES * PRUNE_TO);
+        int drop = entries.size() - keep;
+        if (drop <= 0) return;
+        List<Entry> all = new ArrayList<Entry>(entries.values());
+        all.sort((a, b) -> Long.compare(a.at, b.at));
+        for (int i = 0; i < drop && i < all.size(); i++) {
+            entries.remove(all.get(i).key);
+            dirty++;
         }
     }
 

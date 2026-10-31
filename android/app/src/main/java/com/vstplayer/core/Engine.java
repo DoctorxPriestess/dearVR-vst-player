@@ -40,6 +40,15 @@ public class Engine {
     static int AFFINITY_OVERRIDE = -1;
     /** -1 = not yet verified, 1 = this device honours our mask, 0 = pinning unsupported. */
     private static volatile int AFFINITY_MODE = -1;
+    /** Minimum interval between two automatic /proc sweeps, in milliseconds. */
+    private static final long REAP_MIN_INTERVAL_MS = 2000L;
+    /** When the last automatic sweep ran ({@link Diag#now()}). */
+    private static long lastReapAt;
+    /**
+     * True between "about to fork" and "process running". A peer's stray sweep must treat such an
+     * engine as live, or it kills the guest that is still exec'ing.
+     */
+    private volatile boolean spawning;
     /** Mask handed to taskset for the current process, 0 when no pin was requested. */
     private static volatile int AFFINITY_PENDING;
 
@@ -75,10 +84,17 @@ public class Engine {
         if (p != null && p.isAlive()) return;
         synchronized (LIVE) {
             for (Engine other : LIVE) {
-                if (other != this && other.isRunning()) return;   // a peer engine still owns guests
+                // "Owns guests" covers a lane that is still between fork and exec: its process
+                // exists but isRunning() cannot see it yet.
+                if (other != this && other.ownsGuests()) return;
             }
         }
         killStrayGuests();
+    }
+
+    /** True when this engine has or is about to have a guest process of its own. */
+    private boolean ownsGuests() {
+        return spawning || isRunning();
     }
 
     /**
@@ -87,6 +103,24 @@ public class Engine {
      * exiting guest still has the old proot-loader mapped.
      */
     public static void killStrayGuests() {
+        killStrayGuests(false);
+    }
+
+    /**
+     * @param force true for the callers that cannot tolerate a skipped sweep (re-extraction, the
+     *              boot retry); otherwise repeated calls within {@link #REAP_MIN_INTERVAL_MS} are
+     *              dropped, because the sweep opens every {@code /proc} entry and eight lanes
+     *              starting at once each used to run it
+     */
+    public static synchronized void killStrayGuests(boolean force) {
+        long now = Diag.now();
+        if (!force && now - lastReapAt < REAP_MIN_INTERVAL_MS) return;
+        lastReapAt = now;
+        synchronized (LIVE) {
+            for (Engine e : LIVE) {
+                if (e.spawning) return;   // a lane is being born; its guest is not a stray
+            }
+        }
         File[] entries = new File("/proc").listFiles();
         if (entries == null) return;
         final int me = android.os.Process.myPid();
@@ -143,22 +177,17 @@ public class Engine {
         return isRunning() && ready;
     }
 
+    /** Guest work / in / out directories; {@link Env} owns the layout and caches them. */
     public File workDir() {
-        File f = new File(env.glbcDir(), "opt/vstenv/work");
-        f.mkdirs();
-        return f;
+        return env.workDir();
     }
 
     public File inDir() {
-        File f = new File(workDir(), "in");
-        f.mkdirs();
-        return f;
+        return env.inDir();
     }
 
     public File outDir() {
-        File f = new File(workDir(), "out");
-        f.mkdirs();
-        return f;
+        return env.outDir();
     }
 
     public synchronized void start(Listener l) throws IOException {
@@ -222,8 +251,23 @@ public class Engine {
         reapStrays();
         tSpawn = Diag.now();
         sawFirstLine = false;
-        proc = pb.start();
-        LIVE.add(this);
+        // Join LIVE before the fork, not after: between pb.start() and LIVE.add(this) a peer's
+        // stray sweep saw no owner for this guest and killed it, so a lane failing at random also
+        // tripped the "no engine output" retry that turns proot's seccomp path off for the process.
+        synchronized (LIVE) {
+            spawning = true;
+            LIVE.add(this);
+        }
+        try {
+            proc = pb.start();
+        } catch (IOException | RuntimeException ex) {
+            synchronized (LIVE) {
+                LIVE.remove(this);
+            }
+            spawning = false;
+            throw ex;
+        }
+        spawning = false;
         Diag.log("engine spawn +" + (Diag.now() - tBoot) + "ms");
         stdin = proc.getOutputStream();
         reader = new Thread(this::pump, "engine-reader");

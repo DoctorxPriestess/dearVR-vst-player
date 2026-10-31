@@ -3,6 +3,7 @@ package com.vstplayer.ui;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
@@ -141,9 +142,13 @@ public class TrackList extends ScrollView {
         final Icon note;
         final TextView title;
         final TextView sub;
+        /** The two backgrounds this row switches between; built once, never reallocated per track. */
+        final GradientDrawable bgOn, bgOff;
+        final GradientDrawable markOn, markOff;
 
         Row(File file, LinearLayout root, FrameLayout mark, Icon check, Icon note,
-            TextView title, TextView sub) {
+            TextView title, TextView sub, GradientDrawable bgOn, GradientDrawable bgOff,
+            GradientDrawable markOn, GradientDrawable markOff) {
             this.file = file;
             this.root = root;
             this.mark = mark;
@@ -151,6 +156,10 @@ public class TrackList extends ScrollView {
             this.note = note;
             this.title = title;
             this.sub = sub;
+            this.bgOn = bgOn;
+            this.bgOff = bgOff;
+            this.markOn = markOn;
+            this.markOff = markOff;
         }
     }
 
@@ -182,6 +191,12 @@ public class TrackList extends ScrollView {
 
         FrameLayout art = new FrameLayout(c);
         art.setBackground(Ui.bg(Ui.withAlpha(0xFFFFFFFF, 0.08f), 8, c));
+        // Restyling happens on every track change and on every selection change: keep the two looks
+        // of this row around instead of allocating new drawables for each of them.
+        final GradientDrawable bgOn = Ui.bg(Ui.withAlpha(Ui.ACC, 0.16f), 10, c);
+        final GradientDrawable bgOff = Ui.bg(0x00000000, 10, c);
+        final GradientDrawable markOn = Ui.circle(Ui.ACC, c);
+        final GradientDrawable markOff = Ui.circle(Ui.withAlpha(0xFFFFFFFF, 0.16f), c);
         Icon note = new Icon(c).name("music");
         FrameLayout.LayoutParams nlp = new FrameLayout.LayoutParams(Ui.dp(c, 18), Ui.dp(c, 18));
         nlp.gravity = Gravity.CENTER;
@@ -205,7 +220,7 @@ public class TrackList extends ScrollView {
         rlp.bottomMargin = Ui.dp(c, 2);
         root.setLayoutParams(rlp);
 
-        final Row row = new Row(f, root, mark, check, note, title, sub);
+        final Row row = new Row(f, root, mark, check, note, title, sub, bgOn, bgOff, markOn, markOff);
         root.setTag(row);
         root.setOnClickListener(v -> {
             if (selectMode) {
@@ -222,13 +237,12 @@ public class TrackList extends ScrollView {
 
     /** Restyles one row for the current selection/playhead/missing state, keeping its views. */
     private void applyRow(Row row) {
-        Context c = getContext();
         boolean isCurrent = row.file.equals(current);
         boolean isSel = selected.contains(row.file);
         boolean miss = missing.contains(row.file.getName());
-        row.root.setBackground(Ui.bg(isSel ? Ui.withAlpha(Ui.ACC, 0.16f) : 0x00000000, 10, c));
+        row.root.setBackground(isSel ? row.bgOn : row.bgOff);
         row.mark.setVisibility(selectMode ? VISIBLE : GONE);
-        row.mark.setBackground(Ui.circle(isSel ? Ui.ACC : Ui.withAlpha(0xFFFFFFFF, 0.16f), c));
+        row.mark.setBackground(isSel ? row.markOn : row.markOff);
         row.check.setVisibility(isSel ? VISIBLE : GONE);
         row.note.tint(isCurrent ? Ui.ACC : Ui.withAlpha(0xFFFFFFFF, 0.55f));
         row.title.setTextColor(miss ? Ui.SUB2 : isCurrent ? Ui.ACC : Ui.TXT);

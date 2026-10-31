@@ -3,7 +3,7 @@
 #
 #   tools/build.sh assemble [flavor]   build a debug APK          (default: standalone)
 #   tools/build.sh install  [flavor]   build, then push+install   (default: standalone)
-#   tools/build.sh check               compile gate: javac + native + style
+#   tools/build.sh check               host self checks + style + compile gate
 #   tools/build.sh lint                Android Lint report
 #   tools/build.sh clean               remove build outputs
 #
@@ -66,6 +66,11 @@ cmd_install() {
 }
 
 cmd_check() {
+    echo "== host self checks =="
+    "$ROOT/tools/tests/run.sh"
+    echo "== style =="
+    python "$ROOT/tools/check_style.py"
+    echo "== compile gate =="
     "$ROOT/tools/gate.sh" check
 }
 

@@ -108,6 +108,18 @@ public final class Tags {
      * the UI shows as "no tags". Use {@link #read(Context, Uri)} when the failure has to be visible.
      */
     public static Info read(File f) {
+        return read(f, true);
+    }
+
+    /**
+     * Same as {@link #read(File)}, but the caller decides whether embedded cover art is loaded.
+     *
+     * <p>Cover bytes are the only unbounded payload in {@link Info}: one library entry per track
+     * multiplied by a multi megabyte picture is how a metadata cache turns into an OOM. Callers
+     * that only need text (the library index, lyrics) pass {@code false}; only the cover loader
+     * asks for {@code true}.
+     */
+    public static Info read(File f, boolean withCover) {
         if (f == null) return new Info();
         Uri uri = uriOf(f);
         if (uri == null && resolver != null) {
@@ -122,14 +134,14 @@ public final class Tags {
         }
         if (uri == null) {
             try (Seekable s = Seekable.of(f)) {
-                return read(s);
+                return read(s, withCover);
             } catch (Throwable t) {
                 Diag.log("tags failed " + f.getName() + ": " + t);
                 return new Info();
             }
         }
         try {
-            return read(app, uri);
+            return read(app, uri, withCover);
         } catch (Throwable t) {
             Diag.log("tags failed (ref) " + f.getName() + ": " + t);
             return new Info();
@@ -143,19 +155,34 @@ public final class Tags {
      *                     permission): the caller can mark the entry as broken.
      */
     public static Info read(Context c, Uri uri) throws IOException {
+        return read(c, uri, true);
+    }
+
+    /**
+     * Reads the tags of a SAF document, optionally without embedded cover art.
+     *
+     * <p>Only the cover carrying form is cached process wide: a coverless read is served straight
+     * from the document and never replaces a cached entry, so a later cover request still sees the
+     * artwork. That also keeps the shared cache exactly as small in entry count as before.
+     */
+    public static Info read(Context c, Uri uri, boolean withCover) throws IOException {
         if (uri == null) throw new IOException("null uri");
         String key = uri.toString();
-        synchronized (Tags.class) {
-            Info hit = URI_CACHE.get(key);
-            if (hit != null) return hit;
+        if (withCover) {
+            synchronized (Tags.class) {
+                Info hit = URI_CACHE.get(key);
+                if (hit != null) return hit;
+            }
         }
         if (c == null) throw new IOException("no context for " + uri);
         Info info;
         try (Seekable s = Seekable.of(c, uri)) {
-            info = read(s);
+            info = read(s, withCover);
         }
-        synchronized (Tags.class) {
-            URI_CACHE.put(key, info);
+        if (withCover) {
+            synchronized (Tags.class) {
+                URI_CACHE.put(key, info);
+            }
         }
         return info;
     }
@@ -164,8 +191,18 @@ public final class Tags {
 
     /** Parses the metadata of any seekable source. Never throws. */
     public static Info read(Seekable s) {
+        return read(s, true);
+    }
+
+    /** Parses the metadata of any seekable source; {@code withCover} also loads embedded art. */
+    public static Info read(Seekable s, boolean withCover) {
         Info info = new Info();
         if (s == null) return info;
+        if (!s.randomAccess()) {
+            // A pipe cannot seek and every reader here seeks; the degradation is documented on
+            // Seekable and the reason is logged where the descriptor was opened.
+            return info;
+        }
         try {
             byte[] magic = new byte[12];
             int n = 0;
@@ -177,8 +214,8 @@ public final class Tags {
             if (n < 8) return info;
             String head = new String(magic, 0, 4, LATIN);
             long len = s.size();
-            if ("RIFF".equals(head) || "RF64".equals(head)) readWav(s, len, info);
-            else if ("fLaC".equals(head)) readFlac(s, info);
+            if ("RIFF".equals(head) || "RF64".equals(head)) readWav(s, len, info, withCover);
+            else if ("fLaC".equals(head)) readFlac(s, info, withCover);
             else if ("ftyp".equals(new String(magic, 4, 4, LATIN))) {
                 // MP4/M4A keeps its tags in atoms; the audio payload is skipped by seeking.
                 Mp4Tags m = Mp4Tags.read(s);
@@ -195,7 +232,7 @@ public final class Tags {
 
     // ------------------------------------------------------------------ WAV
 
-    private static void readWav(Seekable s, long len, Info info) throws Exception {
+    private static void readWav(Seekable s, long len, Info info, boolean withCover) throws Exception {
         s.seek(12);
         byte[] hdr = new byte[8];
         while (s.position() + 8 <= len) {
@@ -220,7 +257,7 @@ public final class Tags {
             } else if ("id3 ".equals(id) || "ID3 ".equals(id)) {
                 byte[] tag = new byte[(int) Math.min(size, 1 << 20)];
                 s.readFully(tag);
-                readId3(tag, 0, tag.length, info);
+                readId3(tag, 0, tag.length, info, withCover);
             }
             s.seek(Math.min(next, len));
         }
@@ -244,7 +281,7 @@ public final class Tags {
 
     // ------------------------------------------------------------------ FLAC
 
-    private static void readFlac(Seekable s, Info info) throws Exception {
+    private static void readFlac(Seekable s, Info info, boolean withCover) throws Exception {
         s.seek(4);
         boolean last = false;
         byte[] h = new byte[4];
@@ -273,6 +310,12 @@ public final class Tags {
                 info.artist = v.get("artist");
                 info.lyrics = firstNonEmpty(v.get("lyrics"), v.get("unsyncedlyrics"), v.get("syncedlyrics"));
             } else if (type == 6) {
+                // A PICTURE block is read only for the cover loader: a 8 MiB block plus its copy
+                // used to be allocated for every track the library merely listed.
+                if (!withCover) {
+                    s.seek(Math.min(next, s.size() > 0 ? s.size() : next));
+                    continue;
+                }
                 byte[] b = new byte[Math.min(size, 8 << 20)];
                 s.readFully(b);
                 if (b.length > 32) {
@@ -314,7 +357,7 @@ public final class Tags {
 
     // ------------------------------------------------------------------ ID3v2
 
-    private static void readId3(byte[] b, int off, int len, Info info) {
+    private static void readId3(byte[] b, int off, int len, Info info, boolean withCover) {
         if (len < 10) return;
         if (b[off] != 'I' || b[off + 1] != 'D' || b[off + 2] != '3') return;
         int ver = b[off + 3];
@@ -334,7 +377,7 @@ public final class Tags {
                 if ("TIT2".equals(id)) info.title = text(b, d, fsize);
                 else if ("TPE1".equals(id)) info.artist = text(b, d, fsize);
                 else if ("USLT".equals(id) || "SYLT".equals(id)) info.lyrics = text(b, d, fsize);
-                else if ("APIC".equals(id)) info.cover = apic(b, d, fsize);
+                else if (withCover && "APIC".equals(id)) info.cover = apic(b, d, fsize);
             } catch (Throwable ignored) {
             }
             p = d + fsize;

@@ -13,17 +13,17 @@ using namespace juce;
 
 struct PresetChunks { std::vector<char> comp, cont; };
 
-static bool readPreset (const String& path, PresetChunks& out)
+static bool readPreset (const String& path, PresetChunks& out, String& err)
 {
     File f (path);
-    if (!f.existsAsFile()) return false;
+    if (!f.existsAsFile()) { err = "no such file"; return false; }
     FileInputStream in (f);
-    if (!in.openedOk()) return false;
+    if (!in.openedOk()) { err = "cannot open"; return false; }
     auto n = in.getTotalLength();
-    if (n < 84) return false;
+    if (n < 84) { err = "too short"; return false; }
     std::vector<char> d ((size_t) n);
     in.read (d.data(), (int) n);
-    if (memcmp (d.data(), "VST3", 4) != 0) return false;
+    if (memcmp (d.data(), "VST3", 4) != 0) { err = "not a VST3 preset"; return false; }
     for (int i = 0; i < 3; ++i)
     {
         size_t o = (size_t) n - 60 + i * 20;
@@ -32,10 +32,16 @@ static bool readPreset (const String& path, PresetChunks& out)
         int64_t off = 0, sz = 0;
         memcpy (&off, d.data() + o + 4, 8);
         memcpy (&sz, d.data() + o + 12, 8);
-        if (off < 0 || sz < 0 || (uint64_t)(off + sz) > (uint64_t) n) continue;
+        // audit #1: (off + sz) can overflow the signed sum before the bounds
+        // check; compare in unsigned space instead.
+        const uint64_t uoff = (uint64_t) off;
+        const uint64_t usz  = (uint64_t) sz;
+        if (off < 0 || sz < 0 || usz > (uint64_t) n || uoff > (uint64_t) n - usz) continue;
         if (strcmp (id, "Comp") == 0) out.comp.assign (d.begin() + off, d.begin() + off + sz);
         else if (strcmp (id, "Cont") == 0) out.cont.assign (d.begin() + off, d.begin() + off + sz);
     }
+    // audit #4: without a Comp chunk applyPreset is a no-op, so report failure.
+    if (out.comp.empty()) { err = "no Comp chunk (unsupported preset container)"; return false; }
     return true;
 }
 
@@ -243,8 +249,14 @@ static bool renderFile (AudioPluginInstance& inst, AudioFormatManager& fm, const
                         const String& outPath, int outCh, int blockSize, double& curSr,
                         const std::function<void (int)>& onProgress = {})
 {
+    // audit #7: rendering onto the input would truncate the file being read.
+    if (File (inPath) == File (outPath))
+    { std::cerr << "input and output are the same file: " << outPath << "\n"; return false; }
     std::unique_ptr<AudioFormatReader> reader (fm.createReaderFor (File (inPath)));
     if (!reader) { std::cerr << "cannot read " << inPath << "\n"; return false; }
+    // audit #9: a 0-channel input made srcCh == -1 and let copyFrom read out of
+    // bounds from an empty AudioBuffer.
+    if (reader->numChannels < 1) { std::cerr << "input has no audio channels: " << inPath << "\n"; return false; }
     const double sr = reader->sampleRate;
     const int64_t totalFrames = reader->lengthInSamples;
     // keep bit depth: 16/24/32 supported by WAV writer, 8-bit gets promoted to 16
@@ -252,6 +264,9 @@ static bool renderFile (AudioPluginInstance& inst, AudioFormatManager& fm, const
     if (outBits <= 8) outBits = 16;
     else if (outBits != 16 && outBits != 24 && outBits != 32) outBits = 24;
 
+    // audit #9: chans[] holds 32 entries; refuse more than 32 output channels.
+    if (outCh > 32) { std::cerr << "plugin has " << outCh << " output channels (max 32 supported)\n"; return false; }
+    const int writeChannels = jmin (outCh, 32);
     if (sr != curSr)
     {
         inst.prepareToPlay (sr, blockSize);
@@ -261,9 +276,11 @@ static bool renderFile (AudioPluginInstance& inst, AudioFormatManager& fm, const
               << outBits << " bit, " << totalFrames << " frames -> " << outPath << "\n";
 
     WavAudioFormat wav;
-    // A re-render has to replace the previous file: opening an existing path keeps its bytes,
-    // so without this the new WAV is appended behind the old one and the file keeps growing.
-    File (outPath).deleteFile();
+    // audit #7: the output has to be a fresh file; a failed deleteFile() would
+    // otherwise leave the old bytes behind or give a half-written file.
+    const File outFile (outPath);
+    if (outFile.existsAsFile() && ! outFile.deleteFile())
+    { std::cerr << "cannot replace existing output: " << outPath << "\n"; return false; }
     std::unique_ptr<FileOutputStream> outStream (File (outPath).createOutputStream());
     if (!outStream) { std::cerr << "cannot create output\n"; return false; }
     std::unique_ptr<AudioFormatWriter> writer (wav.createWriterFor (outStream.get(), sr, (unsigned int) outCh,
@@ -284,14 +301,21 @@ static bool renderFile (AudioPluginInstance& inst, AudioFormatManager& fm, const
         buf.clear();
         for (int ch = 0; ch < outCh; ++ch)
         {
-            int srcCh = jmin (ch, inBuf.getNumChannels() - 1);
+            int srcCh = jmax (0, jmin (ch, inBuf.getNumChannels() - 1));
             buf.copyFrom (ch, 0, inBuf, srcCh, 0, n);
         }
         midi.clear();
         inst.processBlock (buf, midi);
+        // audit #9: chans[] has 32 slots; outCh > 32 was rejected above.
         const float* chans[32];
-        for (int ch = 0; ch < outCh && ch < 32; ++ch) chans[ch] = buf.getReadPointer (ch);
-        writer->writeFromFloatArrays (chans, outCh, n);
+        for (int ch = 0; ch < writeChannels; ++ch) chans[ch] = buf.getReadPointer (ch);
+        // audit #2: a failed write must propagate, otherwise a full disk still
+        // prints OK and leaves a truncated WAV behind.
+        if (! writer->writeFromFloatArrays (chans, writeChannels, n))
+        {
+            std::cerr << "write failed at frame " << pos << " of " << totalFrames << "\n";
+            return false;
+        }
         pos += n;
 
         if (onProgress)
@@ -304,6 +328,8 @@ static bool renderFile (AudioPluginInstance& inst, AudioFormatManager& fm, const
             }
         }
     }
+    // audit #2: flush explicitly so the final write error is not swallowed.
+    if (! writer->flush()) { std::cerr << "flush failed: " << outPath << "\n"; return false; }
     writer.reset();
     std::cerr << "done: " << totalFrames << " frames\n";
     return true;
@@ -367,12 +393,13 @@ int main (int argc, char** argv)
     PresetChunks pc;
     if (presetPath.isNotEmpty())
     {
-        if (readPreset (presetPath, pc))
+        String presetErr;
+        if (readPreset (presetPath, pc, presetErr))
         {
             applyPreset (*inst, pc);
             std::cerr << "preset applied: comp=" << pc.comp.size() << " cont=" << pc.cont.size() << "\n";
         }
-        else std::cerr << "warning: preset read failed\n";
+        else std::cerr << "warning: preset read failed: " << presetErr << "\n";
     }
 
     // resident mode: one "|"-separated command per stdin line, processed sequentially.
@@ -469,7 +496,9 @@ int main (int argc, char** argv)
                 {
                     if (parts.size() < 2 || parts[1].isEmpty()) { protocolLine ("ERR usage PRESET|<vstpresetPath>"); continue; }
                     PresetChunks np;
-                    if (! readPreset (parts[1], np)) { protocolLine ("ERR preset " + parts[1]); continue; }
+                    String presetErr;
+                    if (! readPreset (parts[1], np, presetErr))
+                    { protocolLine ("ERR preset " + parts[1] + ": " + presetErr); continue; }
                     applyPreset (*inst, np);
                     std::cerr << "preset: " << parts[1] << "\n";
                     protocolLine ("OK");
@@ -517,8 +546,9 @@ int main (int argc, char** argv)
                 if (pr.isNotEmpty())
                 {
                     PresetChunks np;
-                    if (readPreset (pr, np)) { applyPreset (*inst, np); std::cerr << "preset: " << pr << "\n"; }
-                    else { protocolLine ("ERR preset " + pr); continue; }
+                    String presetErr;
+                    if (readPreset (pr, np, presetErr)) { applyPreset (*inst, np); std::cerr << "preset: " << pr << "\n"; }
+                    else { protocolLine ("ERR preset " + pr + ": " + presetErr); continue; }
                 }
                 double sr = curSr;
                 const bool rendered = renderFile (*inst, fm, in, out, outCh, blockSize, sr,
@@ -547,7 +577,12 @@ int main (int argc, char** argv)
     if (savePresetPath.isNotEmpty())
     {
         String saveError;
-        writeVstPreset (*inst, savePresetPath, presetPath, saveError);
+        // audit #5: a failed save must exit non-zero, callers check the code.
+        if (! writeVstPreset (*inst, savePresetPath, presetPath, saveError))
+        {
+            std::cerr << "preset save failed: " << saveError << "\n";
+            return 7;
+        }
         if (! hasRender) return 0;
     }
 
@@ -558,7 +593,10 @@ int main (int argc, char** argv)
     for (size_t i = 0; i < inPaths.size(); ++i)
     {
         double sr = curSr;
-        if (renderFile (*inst, fm, inPaths[i], outPaths[i], outCh, blockSize, sr))
+        // audit #6: batch mode used to render without any progress callback, so
+        // PROG never reached stdout and the ps1 wrapper could not show progress.
+        if (renderFile (*inst, fm, inPaths[i], outPaths[i], outCh, blockSize, sr,
+                        [] (int pct) { protocolLine ("PROG " + String (pct)); }))
         {
             if (sr != curSr && ! pc.comp.empty()) applyPreset (*inst, pc);
             curSr = sr;

@@ -137,11 +137,18 @@ public class PlaylistPage extends LinearLayout {
         File rendered = outDir();
         File source = inDir();
         LibraryRef lib = LibraryRef.get(getContext());
+        // One snapshot, one map: the per-entry lookup used to scan the whole index (under the
+        // library's lock) for every stored key, which is quadratic for a long playlist.
+        java.util.Map<String, LibraryRef.Track> byRef = new HashMap<>();
+        for (LibraryRef.Track t : lib.tracks()) {
+            String mapKey = t.rootId + "\u0001" + t.rel;
+            if (!byRef.containsKey(mapKey)) byRef.put(mapKey, t);
+        }
         for (String key : item.tracks) {
             if (key == null || key.isEmpty()) continue;
             String[] ref = Playlists.splitRef(key);
             if (ref != null) {
-                LibraryRef.Track t = lib.track(ref[0], ref[1]);
+                LibraryRef.Track t = byRef.get(ref[0] + "\u0001" + ref[1]);
                 if (t == null) {
                     missing.add(baseName(ref[1]));
                     continue;

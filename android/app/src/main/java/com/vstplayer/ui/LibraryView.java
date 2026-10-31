@@ -69,6 +69,8 @@ public class LibraryView extends LinearLayout {
 
     private static final String PREF = "vstp";
     private static final String KEY_TREE = "treeExpanded";
+    /** Typing rebuilt every row and re-walked the rendered tree: wait for the typing pause. */
+    private static final long SEARCH_DEBOUNCE_MS = 150;
     private static final int MODE_ADDRESS = 0;
     private static final int MODE_TAGS = 1;
 
@@ -89,8 +91,15 @@ public class LibraryView extends LinearLayout {
     private String filterRootId, filterRel;
     private String filterArtist, filterAlbum;
     private String query = "";
+    /** Query typed but not applied yet (see {@link #SEARCH_DEBOUNCE_MS}). */
+    private String pendingQuery = "";
+    /** Applies {@link #pendingQuery} once the typing pause is over. */
+    private final Runnable searchSettled = () -> {
+        if (pendingQuery.equals(query)) return;
+        query = pendingQuery;
+        rerender();
+    };
     private Snapshot last;
-    private String rendered;
 
     public LibraryView(Context c, Host host) {
         super(c);
@@ -110,7 +119,7 @@ public class LibraryView extends LinearLayout {
                 new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
         FrameLayout add = new FrameLayout(c);
         add.setBackground(Ui.circle(Ui.CARD2, c));
-        Icon ic = new Icon(c).name("plus").tint(Ui.TXT).stroke(1.9f);
+        Icon ic = new Icon(c).name("plus").tint(Ui.TXT);
         FrameLayout.LayoutParams ilp = new FrameLayout.LayoutParams(Ui.dp(c, 22), Ui.dp(c, 22));
         ilp.gravity = Gravity.CENTER;
         add.addView(ic, ilp);
@@ -147,8 +156,9 @@ public class LibraryView extends LinearLayout {
             @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
             @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
             @Override public void afterTextChanged(Editable s) {
-                query = s.toString().trim().toLowerCase(Locale.US);
-                rerender();
+                pendingQuery = s.toString().trim().toLowerCase(Locale.US);
+                search.removeCallbacks(searchSettled);
+                search.postDelayed(searchSettled, SEARCH_DEBOUNCE_MS);
             }
         });
 
@@ -227,10 +237,12 @@ public class LibraryView extends LinearLayout {
         final File outDir;
         final File[] outs;
         final int renderedCount;
+        /** Absolute directory path -> {immediate sub-directories, audio files below it}. */
+        final Map<String, int[]> dirStats;
 
         Snapshot(List<Playlists.Item> playlists, boolean corrupt, List<LibraryRef.Root> roots,
                  List<LibraryRef.Track> tracks, Map<String, Tags.Info> trackTags, Set<String> broken,
-                 File outDir, File[] outs, int renderedCount) {
+                 File outDir, File[] outs, int renderedCount, Map<String, int[]> dirStats) {
             this.playlists = playlists;
             this.corrupt = corrupt;
             this.roots = roots;
@@ -240,34 +252,7 @@ public class LibraryView extends LinearLayout {
             this.outDir = outDir;
             this.outs = outs;
             this.renderedCount = renderedCount;
-        }
-
-        String signature() {
-            StringBuilder sb = new StringBuilder();
-            sb.append(corrupt ? 'C' : '-');
-            for (Playlists.Item it : playlists) {
-                sb.append('|').append(it.id).append('\u0001').append(it.name)
-                        .append('\u0001').append(it.tracks.size());
-            }
-            sb.append('#');
-            for (LibraryRef.Root r : roots) sb.append(r.id).append('\u0002').append(r.name).append(';');
-            sb.append('#');
-            for (LibraryRef.Track t : tracks) {
-                sb.append(t.rootId).append('/').append(t.rel).append('\u0002')
-                        .append(t.mtime).append('\u0002').append(t.size).append(';');
-            }
-            sb.append('#').append(renderedCount);
-            appendTree(sb, outs, 0);
-            return sb.toString();
-        }
-
-        private static void appendTree(StringBuilder sb, File[] files, int depth) {
-            if (files == null) { sb.append("null"); return; }
-            for (File f : files) {
-                sb.append(f.getName()).append('\u0001').append(f.length())
-                        .append('\u0001').append(f.lastModified()).append(';');
-                if (f.isDirectory() && depth < 3) appendTree(sb, f.listFiles(), depth + 1);
-            }
+            this.dirStats = dirStats;
         }
 
         Tags.Info tagOf(LibraryRef.Track t) {
@@ -298,10 +283,12 @@ public class LibraryView extends LinearLayout {
             List<LibraryRef.Track> tracks = lib.tracks();
             List<File> renderedFiles = out == null ? new ArrayList<>() : Paths.audioFiles(out);
             File[] outs = out == null ? null : out.listFiles();
+            Map<String, int[]> dirStats = new HashMap<>();
+            if (outs != null) for (File d : outs) countDirStats(d, dirStats, 0);
             Map<String, Tags.Info> localTags = new HashMap<>();
             for (File f : renderedFiles) {
                 if (gen != generation) return;
-                localTags.put(f.getAbsolutePath(), Tags.read(f));
+                localTags.put(f.getAbsolutePath(), readRenderedTags(f));
             }
 
             // First paint: only what is already cached (the persisted slim cache), so the tab shows
@@ -314,7 +301,7 @@ public class LibraryView extends LinearLayout {
                 if (lib.isBroken(t)) broken.add(t.uri);
             }
             publish(gen, new Snapshot(pls, corrupt, roots, tracks, cached, broken,
-                    out, outs, renderedFiles.size()), localTags);
+                    out, outs, renderedFiles.size(), dirStats), localTags);
             if (cached.size() >= tracks.size()) return;
 
             // Second pass, still off the UI thread: read whatever is missing once, then persist.
@@ -327,7 +314,7 @@ public class LibraryView extends LinearLayout {
             }
             lib.flushTags();
             publish(gen, new Snapshot(pls, corrupt, roots, tracks, full, broken,
-                    out, outs, renderedFiles.size()), localTags);
+                    out, outs, renderedFiles.size(), dirStats), localTags);
         });
     }
 
@@ -341,10 +328,9 @@ public class LibraryView extends LinearLayout {
     }
 
     private void render(Snapshot snap) {
+        // Every published snapshot is painted: the old "did the signature change" comparison ran a
+        // full directory walk on the UI thread and then painted in both branches anyway.
         last = snap;
-        String signature = snap.signature();
-        if (signature.equals(rendered)) { paint(); return; }
-        rendered = signature;
         paint();
     }
 
@@ -545,7 +531,7 @@ public class LibraryView extends LinearLayout {
 
         FrameLayout badge = new FrameLayout(c);
         badge.setBackground(Ui.circle(Ui.withAlpha(0xFFFFFFFF, 0.08f), c));
-        Icon ic = new Icon(c).name("folder").tint(Ui.TXT).stroke(1.7f);
+        Icon ic = new Icon(c).name("folder").tint(Ui.TXT);
         FrameLayout.LayoutParams ilp = new FrameLayout.LayoutParams(Ui.dp(c, 20), Ui.dp(c, 20));
         ilp.gravity = Gravity.CENTER;
         badge.addView(ic, ilp);
@@ -597,7 +583,7 @@ public class LibraryView extends LinearLayout {
 
         FrameLayout badge = new FrameLayout(c);
         badge.setBackground(Ui.circle(Ui.withAlpha(0xFFFFFFFF, 0.08f), c));
-        Icon ic = new Icon(c).name("music").tint(broken ? Ui.SUB2 : Ui.TXT).stroke(1.7f);
+        Icon ic = new Icon(c).name("music").tint(broken ? Ui.SUB2 : Ui.TXT);
         FrameLayout.LayoutParams ilp = new FrameLayout.LayoutParams(Ui.dp(c, 19), Ui.dp(c, 19));
         ilp.gravity = Gravity.CENTER;
         badge.addView(ic, ilp);
@@ -881,7 +867,7 @@ public class LibraryView extends LinearLayout {
 
         FrameLayout badge = new FrameLayout(c);
         badge.setBackground(Ui.circle(Ui.withAlpha(0xFFFFFFFF, 0.08f), c));
-        Icon ic = new Icon(c).name("music").tint(Ui.TXT).stroke(1.7f);
+        Icon ic = new Icon(c).name("music").tint(Ui.TXT);
         FrameLayout.LayoutParams ilp = new FrameLayout.LayoutParams(Ui.dp(c, 19), Ui.dp(c, 19));
         ilp.gravity = Gravity.CENTER;
         badge.addView(ic, ilp);
@@ -975,7 +961,7 @@ public class LibraryView extends LinearLayout {
 
         FrameLayout badge = new FrameLayout(c);
         badge.setBackground(Ui.circle(Ui.withAlpha(0xFFFFFFFF, 0.08f), c));
-        Icon ic = new Icon(c).name("folder").tint(Ui.TXT).stroke(1.7f);
+        Icon ic = new Icon(c).name("folder").tint(Ui.TXT);
         FrameLayout.LayoutParams ilp = new FrameLayout.LayoutParams(Ui.dp(c, 20), Ui.dp(c, 20));
         ilp.gravity = Gravity.CENTER;
         badge.addView(ic, ilp);
@@ -988,8 +974,10 @@ public class LibraryView extends LinearLayout {
         name.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
         body.addView(name);
         body.addView(Ui.space(c, 0, Ui.dp(c, 3)));
-        int sub = countSubdirs(dir);
-        int audio = Paths.audioFiles(dir).size();
+        // Counts come from the snapshot; the fallback only covers a directory the scan never saw.
+        int[] stats = last == null ? null : last.dirStats.get(path);
+        int sub = stats != null ? stats[0] : countSubdirs(dir);
+        int audio = stats != null ? stats[1] : Paths.audioFiles(dir).size();
         body.addView(Ui.tv(c, (sub > 0 ? sub + " 个子目录 · " : "") + audio + " 首", 11.5f, Ui.SUB, false));
         row.addView(body, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
         row.addView(Ui.tv(c, open ? "⌄" : "›", 13, Ui.SUB2, false));
@@ -1296,6 +1284,66 @@ public class LibraryView extends LinearLayout {
         return n;
     }
 
+    /**
+     * Directory totals for the rendered-output tree, gathered in one walk on the scan thread.
+     *
+     * <p>A folder row used to call {@code listFiles} plus a recursive {@link Paths#audioFiles} while
+     * painting, so every keystroke in the search box walked the whole tree again.
+     */
+    private static void countDirStats(File dir, Map<String, int[]> out, int depth) {
+        if (dir == null || depth > 16 || !dir.isDirectory() || dir.getName().startsWith(".")) return;
+        File[] arr = dir.listFiles();
+        int sub = 0;
+        int audio = 0;
+        if (arr != null) {
+            for (File f : arr) {
+                if (f.getName().startsWith(".")) continue;
+                if (f.isDirectory()) {
+                    sub++;
+                    countDirStats(f, out, depth + 1);
+                    int[] child = out.get(f.getAbsolutePath());
+                    if (child != null) audio += child[1];
+                } else if (Paths.isAudioName(f.getName())) {
+                    audio++;
+                }
+            }
+        }
+        out.put(dir.getAbsolutePath(), new int[]{sub, audio});
+    }
+
+    /** Parsed tags of one rendered file plus the file identity they were parsed from. */
+    private static final class CachedTag {
+        final long size, mtime;
+        final Tags.Info info;
+
+        CachedTag(long size, long mtime, Tags.Info info) {
+            this.size = size;
+            this.mtime = mtime;
+            this.info = info;
+        }
+    }
+
+    /** Scan-thread only: {@link #readRenderedTags} runs on the single library lane. */
+    private final Map<String, CachedTag> tagCache = new HashMap<>();
+
+    /**
+     * Tags of one rendered file, re-read only when the file itself changed.
+     *
+     * <p>The rendered folder is rescanned on every tab switch; parsing a hundred headers each time
+     * was pure disk work for data that had not changed.
+     */
+    private Tags.Info readRenderedTags(File f) {
+        String path = f.getAbsolutePath();
+        long size = f.length();
+        long mtime = f.lastModified();
+        CachedTag hit = tagCache.get(path);
+        if (hit != null && hit.size == size && hit.mtime == mtime) return hit.info;
+        Tags.Info info = Tags.read(f);
+        if (tagCache.size() > 4096) tagCache.clear();
+        tagCache.put(path, new CachedTag(size, mtime, info));
+        return info;
+    }
+
     private static int audioCount(File[] entries) {
         if (entries == null) return 0;
         int n = 0;
@@ -1323,7 +1371,6 @@ public class LibraryView extends LinearLayout {
     }
 
     private void rerender() {
-        rendered = null;
         paint();
     }
 

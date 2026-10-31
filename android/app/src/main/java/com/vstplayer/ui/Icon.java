@@ -47,6 +47,8 @@ public class Icon extends View {
     private String name = "music";
     private int tint = Ui.TXT;
     private Drawable drawable;
+    /** Rebuilt only when the tint changes: allocating one per frame was pure garbage. */
+    private PorterDuffColorFilter filter;
 
     public Icon(Context c) {
         super(c);
@@ -62,13 +64,9 @@ public class Icon extends View {
     }
 
     public Icon tint(int c) {
+        if (c != tint) filter = null;
         tint = c;
         invalidate();
-        return this;
-    }
-
-    /** Kept for source compatibility: the vector assets define their own weight. */
-    public Icon stroke(float w) {
         return this;
     }
 
@@ -80,7 +78,8 @@ public class Icon extends View {
 
     @Override protected void onDraw(Canvas cv) {
         if (drawable == null) return;
-        drawable.setColorFilter(new PorterDuffColorFilter(tint, PorterDuff.Mode.SRC_IN));
+        if (filter == null) filter = new PorterDuffColorFilter(tint, PorterDuff.Mode.SRC_IN);
+        drawable.setColorFilter(filter);
         drawable.setBounds(0, 0, getWidth(), getHeight());
         drawable.draw(cv);
     }

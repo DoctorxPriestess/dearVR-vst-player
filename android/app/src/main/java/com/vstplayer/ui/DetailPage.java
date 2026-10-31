@@ -2,13 +2,7 @@ package com.vstplayer.ui;
 
 import android.app.AlertDialog;
 import android.content.Context;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
-import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.ColorMatrix;
-import android.graphics.ColorMatrixColorFilter;
-import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
@@ -108,7 +102,8 @@ public class DetailPage extends FrameLayout implements Player.Listener {
         meta.addView(Ui.space(c, 0, Ui.dp(c, 3)));
         meta.addView(artist);
         header.addView(meta, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        root.addView(header, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(header, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
 
         selBar = Ui.tv(c, "", 12, Ui.ACC, true);
         selBar.setPadding(pad, Ui.dp(c, 2), pad, Ui.dp(c, 4));
@@ -134,7 +129,8 @@ public class DetailPage extends FrameLayout implements Player.Listener {
         pills = Ui.row(c);
         LinearLayout pillWrap = Ui.row(c);
         pillWrap.setPadding(pad, 0, pad, Ui.dp(c, 6));
-        pillWrap.addView(pills, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        pillWrap.addView(pills, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
         a.addView(pillWrap);
         emptyHint = Ui.tv(c, "还没有在播放的音频\n去「资料库」点一首开始", 13.5f, Ui.SUB, false);
         emptyHint.setGravity(Gravity.CENTER);
@@ -194,11 +190,12 @@ public class DetailPage extends FrameLayout implements Player.Listener {
         bottom.setPadding(pad, 0, pad, Ui.dp(c, 12));
         seek = new Slider(c).accent(Ui.withAlpha(0xFFFFFFFF, 0.95f))
                 .trackColor(Ui.withAlpha(0xFFFFFFFF, 0.25f)).thick(4f, 0f).knob(true);
-        seek.setOnChange(new Slider.OnChange() {
+        seek.onChange(new Slider.OnChange() {
             @Override public void onChanging(float v) { seekDrag = true; pos.setText(fmt((int) (durationMs * v))); }
             @Override public void onChanged(float v) { seekDrag = false; Player.get().seek(v); }
         });
-        bottom.addView(seek, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        bottom.addView(seek, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
         LinearLayout times = Ui.row(c);
         pos = Ui.tv(c, "--:--", 11, Ui.withAlpha(0xFFFFFFFF, 0.7f), false);
         dur = Ui.tv(c, "--:--", 11, Ui.withAlpha(0xFFFFFFFF, 0.7f), false);
@@ -206,11 +203,13 @@ public class DetailPage extends FrameLayout implements Player.Listener {
         times.addView(pos, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         times.addView(badge);
         FrameLayout rightCell = new FrameLayout(c);
-        FrameLayout.LayoutParams rlp2 = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        FrameLayout.LayoutParams rlp2 = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
         rlp2.gravity = Gravity.END;
         rightCell.addView(dur, rlp2);
         times.addView(rightCell, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        bottom.addView(times, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        bottom.addView(times, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
 
         LinearLayout ctl = Ui.row(c);
         ctl.setGravity(Gravity.CENTER);
@@ -224,9 +223,13 @@ public class DetailPage extends FrameLayout implements Player.Listener {
         playBtn.addView(playIcon, ilp);
         Icon next = new Icon(c).name("next").tint(Ui.TXT);
         ctl.addView(prev, new LinearLayout.LayoutParams(Ui.dp(c, 64), Ui.dp(c, 64)));
-        ctl.addView(playBtn, new LinearLayout.LayoutParams(Ui.dp(c, 72), Ui.dp(c, 72)) {{ leftMargin = Ui.dp(getContext(), 10); rightMargin = Ui.dp(getContext(), 10); }});
+        LinearLayout.LayoutParams playLp = new LinearLayout.LayoutParams(Ui.dp(c, 72), Ui.dp(c, 72));
+        playLp.leftMargin = Ui.dp(c, 10);
+        playLp.rightMargin = Ui.dp(c, 10);
+        ctl.addView(playBtn, playLp);
         ctl.addView(next, new LinearLayout.LayoutParams(Ui.dp(c, 64), Ui.dp(c, 64)));
-        bottom.addView(ctl, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        bottom.addView(ctl, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(bottom);
 
         prev.setOnClickListener(v -> Player.get().prev());
@@ -381,7 +384,7 @@ public class DetailPage extends FrameLayout implements Player.Listener {
     @Override public void onMode(int mode) { buildPills(); }
 
     private void updateChip() {
-        View v = (View) findViewWithTag("chipWrap");
+        View v = findViewWithTag("chipWrap");
         if (v != null) v.setVisibility(Player.get().modified() ? VISIBLE : GONE);
     }
 
@@ -440,6 +443,18 @@ public class DetailPage extends FrameLayout implements Player.Listener {
     /** Reverse of {@link #beginEnter}. */
     public void beginExit() {
         setBackgroundColor(Color.TRANSPARENT);
+    }
+
+    /**
+     * Frees the blurred backdrop ladder once the page is gone: it is ~5.8 MB and would otherwise sit
+     * in memory (and pin the 1024 px artwork in the cover cache) until the next track. The next open
+     * asks for it again, which is a background decode plus the blur the loader already runs off the
+     * UI thread.
+     */
+    public void releaseArt() {
+        backdropFor = null;   // the ladder is gone, so the next open must rebuild it
+        bg.release();
+        bg.invalidate();
     }
 
     private static float clamp01(float v) { return v < 0f ? 0f : (v > 1f ? 1f : v); }
@@ -546,7 +561,10 @@ public class DetailPage extends FrameLayout implements Player.Listener {
         new AlertDialog.Builder(c).setTitle("手动搜索歌词").setView(e)
                 .setPositiveButton("搜索", (d, w) -> {
                     Lyrics.search(e.getText().toString(), doc -> {
-                        if (doc == null || !doc.ok()) { Toast.makeText(c, "没有找到歌词", Toast.LENGTH_SHORT).show(); return; }
+                        if (doc == null || !doc.ok()) {
+                            Toast.makeText(c, "没有找到歌词", Toast.LENGTH_SHORT).show();
+                            return;
+                        }
                         lyricLines = doc.lines;
                         currentLine = -1;
                         renderLyrics(doc.note);
@@ -558,31 +576,6 @@ public class DetailPage extends FrameLayout implements Player.Listener {
     static String fmt(int ms) {
         int s = Math.max(0, ms / 1000);
         return String.format(Locale.US, "%d:%02d", s / 60, s % 60);
-    }
-
-    /** Cheap blur: shrink the artwork to a handful of pixels and let the view scale it back up. */
-    static final class Blur {
-        static Bitmap tiny(Bitmap src) {
-            int w = 12, h = 12;
-            Bitmap small = Bitmap.createScaledBitmap(src, w, h, true);
-            Bitmap out = Bitmap.createBitmap(w * 2, h * 2, Bitmap.Config.ARGB_8888);
-            Canvas cv = new Canvas(out);
-            Paint p = new Paint(Paint.FILTER_BITMAP_FLAG);
-            cv.drawBitmap(small, null, new android.graphics.Rect(0, 0, w * 2, h * 2), p);
-            return out;
-        }
-
-        static Bitmap gradient(String key, int w, int h) {
-            int hash = key.hashCode();
-            int r = 20 + Math.abs(hash % 60);
-            int g = 18 + Math.abs((hash >> 8) % 50);
-            int b = 24 + Math.abs((hash >> 16) % 60);
-            Bitmap bmp = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888);
-            for (int y = 0; y < 4; y++)
-                for (int x = 0; x < 4; x++)
-                    bmp.setPixel(x, y, Color.rgb(Math.min(255, r + x * 6), Math.min(255, g + y * 5), Math.min(255, b + x * 3)));
-            return Bitmap.createScaledBitmap(bmp, Math.max(1, w / 8), Math.max(1, h / 8), true);
-        }
     }
 
 }

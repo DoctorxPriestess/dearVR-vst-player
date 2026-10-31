@@ -23,6 +23,8 @@ MAX_LINE_SUFFIXES = {".java", ".c", ".h", ".cpp", ".hpp", ".kts", ".xml"}
 SKIP_DIRS = {
     ".git", "_attic", "_notes", "build", "third_party", "test", "dist",
     "assets", "assets_orig", "gradle", "build_payload", "__pycache__",
+    # archived trees keep their original formatting on purpose
+    "legacy",
 }
 SUFFIXES = {".java", ".c", ".h", ".cpp", ".hpp", ".kts", ".gradle", ".sh", ".py", ".md", ".xml", ".cmake", ".txt"}
 # Paths whose long lines are legitimate (generated tables, embedded data).

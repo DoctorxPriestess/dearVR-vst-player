@@ -36,7 +36,7 @@ public final class Mp4Tags {
     /** Reads the tags from any seekable source (plain file or SAF document). Never throws. */
     public static Mp4Tags read(Seekable s) {
         Mp4Tags out = new Mp4Tags();
-        if (s == null) return out;
+        if (s == null || !s.randomAccess()) return out;
         try {
             long len = s.size();
             long moov = findAtom(s, 0, len, "moov");
@@ -138,10 +138,5 @@ public final class Mp4Tags {
         } catch (Throwable ignored) {
         }
         return -1;
-    }
-
-    static String stem(String name) {
-        int dot = name == null ? -1 : name.lastIndexOf('.');
-        return dot > 0 ? name.substring(0, dot) : (name == null ? "" : name);
     }
 }

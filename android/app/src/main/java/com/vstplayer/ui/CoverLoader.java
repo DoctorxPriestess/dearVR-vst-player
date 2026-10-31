@@ -47,6 +47,17 @@ public final class CoverLoader {
         return t;
     });
 
+    /**
+     * The blur ladder is pure CPU (tens of milliseconds per track) and touches no shared cache, so
+     * it gets its own lane: a backdrop being prepared must not hold back the next cover or the tag
+     * read of a track the user just swiped to.
+     */
+    private static final ExecutorService PREPARE = Executors.newSingleThreadExecutor(runnable -> {
+        Thread t = new Thread(runnable, "cover-prepare");
+        t.setDaemon(true);
+        return t;
+    });
+
     private static final LruCache<String, Tags.Info> TAG_CACHE = new LruCache<String, Tags.Info>(4096) {
         @Override protected int sizeOf(String key, Tags.Info v) {
             int bytes = v == null || v.cover == null ? 0 : v.cover.length;
@@ -77,7 +88,35 @@ public final class CoverLoader {
     public static Request backdrop(Context c, File f, final int px, final int refWidth,
                                    Callback<CoverMorph.Prepared> cb) {
         final Context app = c.getApplicationContext();
-        return submit(f, () -> CoverMorph.prepare(artNow(app, f, px), refWidth), cb);
+        final Request req = new Request();
+        BG.execute(() -> {
+            if (req.cancelled) return;
+            // Decode on the shared lane (it owns the tag/art caches), then hand the pure CPU blur
+            // to its own lane so the next cover request does not queue behind it.
+            final Bitmap art;
+            try {
+                art = artNow(app, f, px);
+            } catch (Throwable t) {
+                Diag.log("cover load failed " + f.getName() + ": " + t);
+                return;
+            }
+            if (req.cancelled) return;
+            PREPARE.execute(() -> {
+                if (req.cancelled) return;
+                final CoverMorph.Prepared prepared;
+                try {
+                    prepared = CoverMorph.prepare(art, refWidth);
+                } catch (Throwable t) {
+                    Diag.log("cover blur failed " + f.getName() + ": " + t);
+                    return;
+                }
+                if (req.cancelled) return;
+                UI.post(() -> {
+                    if (!req.cancelled) cb.onResult(f, prepared);
+                });
+            });
+        });
+        return req;
     }
 
     // ------------------------------------------------------------------ internals

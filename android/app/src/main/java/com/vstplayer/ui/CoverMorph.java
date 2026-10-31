@@ -50,6 +50,9 @@ public class CoverMorph extends View {
     private final Paint mask = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final ColorMatrix cm = new ColorMatrix();
     private final ColorMatrixColorFilter dimFilter = new ColorMatrixColorFilter(cm);
+    /** Edge gradients of the feather, valid while {@link #featherKey} still matches the rectangle. */
+    private final LinearGradient[] featherEdge = new LinearGradient[4];
+    private float[] featherKey;
 
     private float progress = 1f;
     private float backdrop = 1f;
@@ -90,7 +93,7 @@ public class CoverMorph extends View {
         p.setShader(new LinearGradient(0, 0, px, px, top, bottom, Shader.TileMode.CLAMP));
         cv.drawRect(0, 0, px, px, p);
         try {
-            Drawable d = c.getResources().getDrawable(R.drawable.ic_music);
+            Drawable d = c.getDrawable(R.drawable.ic_music);
             d = d.mutate();
             d.setTint(0x8CFFFFFF);
             int s = px / 4;
@@ -143,12 +146,6 @@ public class CoverMorph extends View {
         invalidate();
     }
 
-    /** Convenience for callers that have their final artwork already: builds and installs in one go. */
-    public void setArt(Bitmap art) {
-        int ref = getWidth() > 0 ? getWidth() : getResources().getDisplayMetrics().widthPixels;
-        setPrepared(prepare(art, ref));
-    }
-
     private static void addBlurLevel(Prepared p, Bitmap sharp, int ref, float sigmaScreen) {
         int w = sharp.getWidth(), h = sharp.getHeight();
         // keep the kernel cheap but never so small that bilinear upscaling shows its grid
@@ -167,7 +164,8 @@ public class CoverMorph extends View {
         p.sigmas.add(sigmaBmp * ref / (float) targetW);
     }
 
-    private void release() {
+    /** Drops every bitmap this view owns. The borrowed level 0 stays with the cover cache. */
+    public void release() {
         for (int i = 0; i < levels.size(); i++) {
             Bitmap b = levels.get(i);
             if (b == null || b.isRecycled()) continue;
@@ -220,11 +218,17 @@ public class CoverMorph extends View {
         float sigma = sigmas.get(i0) + (sigmas.get(i1) - sigmas.get(i0)) * frac;
         float feather = Math.min(Math.min(dst.width(), dst.height()) * 0.22f, 2.2f * sigma);
 
-        int save = cv.saveLayer(dst, null);
+        // The offscreen layer exists only to confine the DST_IN feather to the growing rectangle.
+        // Without a feather the two passes composite identically on their own (SRC_OVER is
+        // associative), so an unconditional saveLayer was paying for a full screen buffer per frame.
+        boolean layer = feather > 1.2f;
+        int save = layer ? cv.saveLayer(dst, null) : -1;
         drawCover(cv, levels.get(i0), dst, dimNow, 1f);
         if (frac > 0.02f) drawCover(cv, levels.get(i1), dst, dimNow, frac);
-        if (feather > 1.2f) feather(cv, dst, feather, w, h);
-        cv.restoreToCount(save);
+        if (layer) {
+            feather(cv, dst, feather, w, h);
+            cv.restoreToCount(save);
+        }
     }
 
     /** Draws {@code b} center cropped into {@code d}. */
@@ -249,15 +253,38 @@ public class CoverMorph extends View {
         bmp.setAlpha(255);
     }
 
-    /** Softens the border of {@code r} over {@code f} pixels so it blends into the backdrop. */
+    /**
+     * Softens the border of {@code r} over {@code f} pixels so it blends into the backdrop.
+     *
+     * <p>The four gradients are rebuilt only when the rectangle or the feather width changes: during
+     * the grow animation that is nearly every frame, but during any other redraw they are reused
+     * instead of being allocated again.
+     */
     private void feather(Canvas cv, RectF r, float f, int w, int h) {
-        mask.setShader(new LinearGradient(r.left, 0, r.left + f, 0, 0x00000000, 0xFF000000, Shader.TileMode.CLAMP));
+        if (featherKey == null || featherKey[0] != r.left || featherKey[1] != r.top
+                || featherKey[2] != r.right || featherKey[3] != r.bottom || featherKey[4] != f) {
+            if (featherKey == null) featherKey = new float[5];
+            featherKey[0] = r.left;
+            featherKey[1] = r.top;
+            featherKey[2] = r.right;
+            featherKey[3] = r.bottom;
+            featherKey[4] = f;
+            featherEdge[0] = new LinearGradient(r.left, 0, r.left + f, 0,
+                    0x00000000, 0xFF000000, Shader.TileMode.CLAMP);
+            featherEdge[1] = new LinearGradient(r.right - f, 0, r.right, 0,
+                    0xFF000000, 0x00000000, Shader.TileMode.CLAMP);
+            featherEdge[2] = new LinearGradient(0, r.top, 0, r.top + f,
+                    0x00000000, 0xFF000000, Shader.TileMode.CLAMP);
+            featherEdge[3] = new LinearGradient(0, r.bottom - f, 0, r.bottom,
+                    0xFF000000, 0x00000000, Shader.TileMode.CLAMP);
+        }
+        mask.setShader(featherEdge[0]);
         cv.drawRect(r.left - 1, 0, r.left + f, h, mask);
-        mask.setShader(new LinearGradient(r.right - f, 0, r.right, 0, 0xFF000000, 0x00000000, Shader.TileMode.CLAMP));
+        mask.setShader(featherEdge[1]);
         cv.drawRect(r.right - f, 0, r.right + 1, h, mask);
-        mask.setShader(new LinearGradient(0, r.top, 0, r.top + f, 0x00000000, 0xFF000000, Shader.TileMode.CLAMP));
+        mask.setShader(featherEdge[2]);
         cv.drawRect(0, r.top - 1, w, r.top + f, mask);
-        mask.setShader(new LinearGradient(0, r.bottom - f, 0, r.bottom, 0xFF000000, 0x00000000, Shader.TileMode.CLAMP));
+        mask.setShader(featherEdge[3]);
         cv.drawRect(0, r.bottom - f, w, r.bottom + 1, mask);
         mask.setShader(null);
     }

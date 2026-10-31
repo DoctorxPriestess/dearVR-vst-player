@@ -254,6 +254,7 @@ public final class ReplayGain {
             if (cancel != null && cancel.cancelled()) break;
             if (f == null || !f.isFile()) { sum.skipped++; continue; }
             String key = keyOf(f);
+            File temp = null;
             try {
                 Map<String, String> tags = RgTags.read(f);
                 if (RgTags.hasReplayGain(tags)) {
@@ -270,7 +271,6 @@ public final class ReplayGain {
                     continue;
                 }
                 File pcm = f;
-                File temp = null;
                 if (!Segment.isWav(f)) {
                     temp = new File(tmpDir, "rg" + i + "_" + System.nanoTime() + ".wav");
                     if (progress != null) progress.onFile(f, i, sum.total, "解码");
@@ -306,14 +306,18 @@ public final class ReplayGain {
                     progress.onFile(f, i + 1, sum.total,
                             String.format(java.util.Locale.US, "%.1f LUFS → %+d dB", res.lufs, gain));
                 }
-                if (sum.scanned % 5 == 0) st.save();
+                // Throttled: the store decides (100 entries or 30 s), the final save() below is
+                // forced so nothing measured is lost at the end of the scan.
+                if (sum.scanned % 5 == 0) st.saveIfDue();
             } catch (Exception e) {
                 sum.failed++;
                 Diag.log("rg: " + f.getName() + " failed: " + e);
                 if (progress != null) progress.onFile(f, i + 1, sum.total, "失败");
             } finally {
-                File[] left = tmpDir.listFiles();
-                if (left != null) for (File t : left) t.delete();
+                // Only this track's staging file. Deleting the whole directory also removed the
+                // decoded WAV of a concurrent reference scan (it runs on its own thread) and made
+                // that analysis fail halfway.
+                if (temp != null) temp.delete();
             }
         }
         st.save();
@@ -344,7 +348,7 @@ public final class ReplayGain {
                 break;
             }
             base += group.size();
-            st.save();
+            st.saveIfDue();
         }
         st.save();
         invalidate();
@@ -623,9 +627,7 @@ public final class ReplayGain {
             try (java.io.InputStream in = new java.io.FileInputStream(local);
                  java.io.OutputStream out = app.getContentResolver().openOutputStream(uri, "rwt")) {
                 if (out == null) throw new IOException("openOutputStream returned null");
-                byte[] buf = new byte[64 * 1024];
-                int n;
-                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                Io.copy(in, out, new byte[Io.BUF]);
                 out.flush();
                 written++;
                 Diag.log("rg tags written back: " + t.rel + " (" + local.length() + "B)");
@@ -640,9 +642,7 @@ public final class ReplayGain {
         try (java.io.InputStream in = app.getContentResolver().openInputStream(uri);
              java.io.OutputStream out = new java.io.FileOutputStream(dst)) {
             if (in == null) throw new IOException("openInputStream returned null");
-            byte[] buf = new byte[64 * 1024];
-            int n;
-            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            Io.copy(in, out, new byte[Io.BUF]);
             out.flush();
         }
     }

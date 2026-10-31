@@ -46,17 +46,16 @@ public final class Decode {
     private Decode() {
     }
 
-    /** True when the file starts with a RIFF/WAVE signature; everything else needs decoding first. */
+    /**
+     * True when the file starts with a RIFF/WAVE signature; everything else needs decoding first.
+     *
+     * <p>The twelve byte probe itself lives in {@link Segment#isWav(File)} — one implementation, so
+     * the "is this a WAV" answer cannot drift between the decoder and the segment cutter. Only the
+     * null / existence guard is repeated here because {@code Segment} takes a readable file.
+     */
     public static boolean isWav(File f) {
         if (f == null || !f.isFile()) return false;
-        try (RandomAccessFile r = new RandomAccessFile(f, "r")) {
-            byte[] h = new byte[12];
-            if (r.read(h) != 12) return false;
-            return h[0] == 'R' && h[1] == 'I' && h[2] == 'F' && h[3] == 'F'
-                    && h[8] == 'W' && h[9] == 'A' && h[10] == 'V' && h[11] == 'E';
-        } catch (IOException e) {
-            return false;
-        }
+        return Segment.isWav(f);
     }
 
     /** Cooperative cancellation; the render queue hands in one flag per batch. */

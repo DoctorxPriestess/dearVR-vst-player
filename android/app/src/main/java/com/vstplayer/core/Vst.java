@@ -49,6 +49,16 @@ public class Vst implements Engine.Listener {
     }
 
     private final Handler ui = new Handler(Looper.getMainLooper());
+    /**
+     * Off-main-thread work for this class. One daemon thread: the only user is parameter table
+     * parsing, which is a file read plus JSON, and a single thread keeps the results ordered.
+     */
+    private static final java.util.concurrent.ExecutorService BG =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "vst-bg");
+                t.setDaemon(true);
+                return t;
+            });
     private final Object lock = new Object();
     private final ArrayDeque<Cmd> queue = new ArrayDeque<>();
     private final Map<String, Float> pending = new LinkedHashMap<>();
@@ -101,8 +111,9 @@ public class Vst implements Engine.Listener {
             try {
                 if (!env.isReady()) {
                     // A guest that is still exiting keeps the old loader mapped; re-extraction
-                    // would fail with ETXTBSY, so drop any leftover guest processes first.
-                    Engine.killStrayGuests();
+                    // would fail with ETXTBSY, so drop any leftover guest processes first. Forced:
+                    // a rate limited skip would hand the extraction a still mapped binary.
+                    Engine.killStrayGuests(true);
                     preparing = true;
                     Diag.log("env extraction begin");
                     extractWithRetry(env);
@@ -393,7 +404,13 @@ public class Vst implements Engine.Listener {
         setState(OFF, "引擎已停止");
         stopHelpers();
         if (e != null) e.stop();
-        Engine.killStrayGuests();
+        final Env env0 = env;
+        if (env0 != null) env0.invalidateDirs();
+        // The guest sweep opens every /proc entry; this method is called from onDestroy, i.e. on
+        // the main thread, so it must not run there.
+        Thread t = new Thread(() -> Engine.killStrayGuests(true), "engine-reap");
+        t.setDaemon(true);
+        t.start();
         Diag.log("engine stopped (app closing)");
     }
 
@@ -426,7 +443,7 @@ public class Vst implements Engine.Listener {
                         || m.contains("Device or resource busy");
                 if (attempt >= 1 || !busy) throw e;
                 Diag.log("extraction blocked by a dying guest, retrying");
-                Engine.killStrayGuests();
+                Engine.killStrayGuests(true);
                 try {
                     Thread.sleep(800);
                 } catch (InterruptedException ie) {
@@ -570,47 +587,44 @@ public class Vst implements Engine.Listener {
         });
     }
 
+    /**
+     * Reads and parses params.json off the main thread, then publishes the table on it.
+     *
+     * <p>The PARAMS ack arrives on the UI thread, and a plugin with a few hundred parameters makes
+     * the file read plus {@code JSONObject} parse a visible stall. The table itself is still
+     * swapped on the main thread, so readers of {@link #params()} keep the same ordering.
+     */
     private void parseParams() {
-        try {
-            String s = readText(paramsFile());
-            JSONObject root = new JSONObject(s);
-            JSONArray arr = root.optJSONArray("params");
-            List<Param> out = new ArrayList<>();
-            if (arr != null) {
-                for (int i = 0; i < arr.length(); i++) {
-                    JSONObject o = arr.optJSONObject(i);
-                    if (o == null) continue;
-                    out.add(new Param(o.optInt("index"), o.optString("id"), o.optString("name"),
-                            o.optString("label"), o.optInt("steps"), (float) o.optDouble("norm", 0),
-                            o.optString("text")));
-                }
+        BG.execute(() -> {
+            final List<Param> out;
+            try {
+                out = readParams();
+            } catch (Exception e) {
+                Diag.log("params parse failed: " + e);
+                return;
             }
-            synchronized (params) {
-                params.clear();
-                params.addAll(out);
-            }
-            synchronized (applied) {
-                applied.clear();
-                for (Param q : out) applied.put(q.id, q.norm);
-            }
-            Diag.log("params loaded: " + out.size());
-            final StateListener l = listener;
-            if (l != null) ui.post(l::onParams);
-        } catch (Exception e) {
-            Diag.log("params parse failed: " + e);
+            ui.post(() -> applyParams(out));
+        });
+    }
+
+    /** Installs a freshly parsed parameter table (main thread). */
+    private void applyParams(List<Param> out) {
+        synchronized (params) {
+            params.clear();
+            params.addAll(out);
         }
+        synchronized (applied) {
+            applied.clear();
+            for (Param q : out) applied.put(q.id, q.norm);
+        }
+        Diag.log("params loaded: " + out.size());
+        final StateListener l = listener;
+        if (l != null) ui.post(l::onParams);
     }
 
     private static String readText(File f) throws IOException {
-        java.io.InputStream in = new java.io.FileInputStream(f);
-        try {
-            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
-            return new String(bo.toByteArray(), "UTF-8");
-        } finally {
-            try { in.close(); } catch (IOException ignored) { }
+        try (java.io.InputStream in = new java.io.FileInputStream(f)) {
+            return new String(Io.readAll(in), "UTF-8");
         }
     }
 

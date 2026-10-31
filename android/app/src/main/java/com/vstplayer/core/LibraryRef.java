@@ -15,6 +15,8 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -106,12 +108,40 @@ public final class LibraryRef {
     private final File file;
     private final File tagsFile;
 
+    /**
+     * Parsed tags kept for this process. Bounded because a {@link Tags.Info} is not a fixed size:
+     * an unbounded map of 5000 references is the difference between a few megabytes and an OOM.
+     * Entries stored here never carry cover art (see {@link #tagsOf}), so the bound is generous.
+     * It must stay above the size of a typical persisted cache ({@code tags-cache.json} holds up to
+     * {@code MAX_TAGS_JSON}), otherwise loading the persisted tags evicts the tail of the list and
+     * the next library refresh has to re-read those documents through the provider.
+     */
+    private static final int TAG_CACHE_MAX = 4096;
+
     private final List<Root> roots = new ArrayList<>();
     private final List<Track> tracks = new ArrayList<>();
 
-    private final Map<String, CachedTag> tagCache = new LinkedHashMap<>();
+    /**
+     * Lookup indexes over {@link #tracks}, rebuilt by {@link #reindex()}. Guarded by {@code this}
+     * like the list itself; they exist because every reference lookup used to be an O(n) scan of
+     * up to {@link #MAX_TREE_FILES} entries, and the library UI resolves one per row.
+     */
+    private final Map<String, Track> byUri = new HashMap<>();
+    private final Map<String, Track> byVirtual = new HashMap<>();
+
+    private final Map<String, CachedTag> tagCache =
+            new LinkedHashMap<String, CachedTag>(64, 0.75f, true) {
+                @Override protected boolean removeEldestEntry(Map.Entry<String, CachedTag> eldest) {
+                    return size() > TAG_CACHE_MAX;
+                }
+            };
     private final Set<String> broken = new LinkedHashSet<>();
     private volatile boolean tagsDirty;
+    /**
+     * Serialises the index file write. The write happens outside the index monitor (so lookups are
+     * never blocked by a flash write) but two saves must still not share the same temp file.
+     */
+    private final Object saveLock = new Object();
 
     private boolean corrupt;
     private String corruptReason;
@@ -170,6 +200,21 @@ public final class LibraryRef {
         return new String[]{p.substring(0, slash), p.substring(slash + 1)};
     }
 
+    /** Index key for one reference inside a root; never ambiguous with a path. */
+    private static String trackKey(String rootId, String rel) {
+        return (rootId == null ? "" : rootId) + '\u0000' + (rel == null ? "" : rel);
+    }
+
+    /** Rebuilds the lookup indexes from {@link #tracks}. Caller holds {@code this}. */
+    private void reindex() {
+        byUri.clear();
+        byVirtual.clear();
+        for (Track t : tracks) {
+            byUri.put(t.uri, t);
+            byVirtual.put(trackKey(t.rootId, t.rel), t);
+        }
+    }
+
     // ------------------------------------------------------------ read access
 
     public synchronized List<Root> roots() {
@@ -190,8 +235,7 @@ public final class LibraryRef {
     }
 
     public synchronized Track track(String rootId, String rel) {
-        for (Track t : tracks) if (t.rootId.equals(rootId) && t.rel.equals(rel)) return t;
-        return null;
+        return byVirtual.get(trackKey(rootId, rel));
     }
 
     public synchronized Track trackByVirtual(File f) {
@@ -208,9 +252,7 @@ public final class LibraryRef {
 
     /** The track that references this document, or null. */
     public synchronized Track trackByUri(String uri) {
-        if (uri == null) return null;
-        for (Track t : tracks) if (uri.equals(t.uri)) return t;
-        return null;
+        return uri == null ? null : byUri.get(uri);
     }
 
     public synchronized List<Track> tracksOf(String rootId) {
@@ -245,6 +287,7 @@ public final class LibraryRef {
         readTags();
 
         if (!file.exists()) {
+            reindex();
             rebindTags();
             return;
         }
@@ -280,49 +323,76 @@ public final class LibraryRef {
                 }
             }
             tracks.addAll(parsed);
+            reindex();
             rebindTags();
         } catch (Throwable e) {
             // Keep the damaged file byte for byte: a later save must not replace it with this state.
             roots.clear();
             tracks.clear();
+            reindex();
             corrupt = true;
             corruptReason = e.getClass().getSimpleName() + ": " + e.getMessage();
             Diag.log("library index unreadable (" + file.getName() + " kept): " + corruptReason);
         }
     }
 
-    /** Writes the index atomically; refused while the on-disk file is unreadable. */
-    public synchronized boolean save() {
-        if (corrupt) {
-            Diag.log("library save refused: existing index is unreadable (" + corruptReason + ")");
-            return false;
+    /**
+     * Writes the index atomically; refused while the on-disk file is unreadable.
+     *
+     * <p>The index is serialised under the monitor (pure in-memory work) and the file write with
+     * its fsync happens outside it, so a save never blocks a lookup for the duration of a flash
+     * write.
+     */
+    public boolean save() {
+        synchronized (saveLock) {
+            return saveLocked();
+        }
+    }
+
+    private boolean saveLocked() {
+        byte[] data;
+        int rootCount;
+        int trackCount;
+        synchronized (this) {
+            if (corrupt) {
+                Diag.log("library save refused: existing index is unreadable (" + corruptReason + ")");
+                return false;
+            }
+            try {
+                JSONObject root = new JSONObject();
+                root.put("version", VERSION);
+                JSONArray rs = new JSONArray();
+                for (Root r : roots) {
+                    JSONObject o = new JSONObject();
+                    o.put("id", r.id);
+                    o.put("uri", r.uri);
+                    o.put("name", r.name);
+                    o.put("kind", r.kind);
+                    rs.put(o);
+                }
+                JSONArray ts = new JSONArray();
+                for (Track t : tracks) {
+                    JSONObject o = new JSONObject();
+                    o.put("rootId", t.rootId);
+                    o.put("rel", t.rel);
+                    o.put("uri", t.uri);
+                    o.put("size", t.size);
+                    o.put("mtime", t.mtime);
+                    ts.put(o);
+                }
+                root.put("roots", rs);
+                root.put("tracks", ts);
+                data = root.toString().getBytes("UTF-8");
+                rootCount = roots.size();
+                trackCount = tracks.size();
+            } catch (Throwable e) {
+                Diag.log("library save failed: " + e);
+                return false;
+            }
         }
         try {
-            JSONObject root = new JSONObject();
-            root.put("version", VERSION);
-            JSONArray rs = new JSONArray();
-            for (Root r : roots) {
-                JSONObject o = new JSONObject();
-                o.put("id", r.id);
-                o.put("uri", r.uri);
-                o.put("name", r.name);
-                o.put("kind", r.kind);
-                rs.put(o);
-            }
-            JSONArray ts = new JSONArray();
-            for (Track t : tracks) {
-                JSONObject o = new JSONObject();
-                o.put("rootId", t.rootId);
-                o.put("rel", t.rel);
-                o.put("uri", t.uri);
-                o.put("size", t.size);
-                o.put("mtime", t.mtime);
-                ts.put(o);
-            }
-            root.put("roots", rs);
-            root.put("tracks", ts);
-            writeAtomic(file, root.toString().getBytes("UTF-8"));
-            Diag.log("library saved: " + roots.size() + " root(s), " + tracks.size() + " track(s)");
+            writeAtomic(file, data);
+            Diag.log("library saved: " + rootCount + " root(s), " + trackCount + " track(s)");
             return true;
         } catch (Throwable e) {
             Diag.log("library save failed: " + e);
@@ -362,9 +432,11 @@ public final class LibraryRef {
      * @param name   display name of the folder; when null/empty it is read from the provider
      * @return number of audio documents indexed below the tree, or -1 when the tree is unusable
      */
-    public synchronized int addTree(Context c, Uri tree, String name) {
-        if (corrupt) return -1;
+    public int addTree(Context c, Uri tree, String name) {
         if (tree == null) return -1;
+        synchronized (this) {
+            if (corrupt) return -1;
+        }
         String treeId;
         try {
             treeId = DocumentsContract.getTreeDocumentId(tree);
@@ -376,42 +448,62 @@ public final class LibraryRef {
 
         // The display name is the first level of the address tree; read it before the id is built.
         String label = resolveTreeName(c, tree, treeId);
-        Root root = null;
-        for (Root r : roots) {
-            if (KIND_TREE.equals(r.kind) && tree.toString().equals(r.uri)) { root = r; break; }
-        }
-        if (root == null) {
-            root = new Root();
-            root.kind = KIND_TREE;
-            root.uri = tree.toString();
-            root.name = cleanName(name);
-            if (root.name.isEmpty()) root.name = label;
-            if (root.name.isEmpty()) root.name = "已导入文件夹";
-            root.id = newRootId(root.name, tree.toString());
-            roots.add(root);
-        } else {
-            String cleaned = cleanName(name);
-            if (!cleaned.isEmpty()) root.name = cleaned;
+        String treeUri = tree.toString();
+
+        // Register (or find) the root under the monitor. The provider walk below then runs without
+        // it: 5000 documents take seconds, and holding the index monitor for that long stalls every
+        // lookup, including the ones the UI makes on the main thread.
+        final String rid;
+        synchronized (this) {
+            if (corrupt) return -1;
+            Root root = null;
+            for (Root r : roots) {
+                if (KIND_TREE.equals(r.kind) && treeUri.equals(r.uri)) {
+                    root = r;
+                    break;
+                }
+            }
+            if (root == null) {
+                root = new Root();
+                root.kind = KIND_TREE;
+                root.uri = treeUri;
+                root.name = cleanName(name);
+                if (root.name.isEmpty()) root.name = label;
+                if (root.name.isEmpty()) root.name = "已导入文件夹";
+                root.id = newRootId(root.name, treeUri);
+                roots.add(root);
+            } else {
+                String cleaned = cleanName(name);
+                if (!cleaned.isEmpty()) root.name = cleaned;
+            }
+            rid = root.id;
         }
 
         List<Track> found = new ArrayList<>();
         try {
-            walk(c, tree, treeId, "", root.id, found, 0);
+            walk(c, tree, treeId, "", rid, found, 0);
         } catch (Throwable e) {
             Diag.log("tree walk failed: " + e);
         }
-        if (found.isEmpty()) {
-            // Nothing found: keep a previously indexed root intact instead of wiping it.
-            if (tracksOf(root.id).isEmpty()) return 0;
-            return tracksOf(root.id).size();
+
+        boolean needSave = false;
+        int result;
+        synchronized (this) {
+            if (found.isEmpty()) {
+                // Nothing found: keep a previously indexed root intact instead of wiping it.
+                result = tracksOf(rid).size();
+            } else {
+                // Re-index replaces this root's entries; playlist keys (rootId + "/" + rel) stay
+                // valid for every file that still exists.
+                tracks.removeIf(t -> t.rootId.equals(rid));
+                tracks.addAll(found);
+                reindex();
+                needSave = true;
+                result = found.size();
+            }
         }
-        // Re-index replaces this root's entries; playlist keys (rootId + "/" + rel) stay valid
-        // for every file that still exists.
-        final String rid = root.id;
-        tracks.removeIf(t -> t.rootId.equals(rid));
-        tracks.addAll(found);
-        save();
-        return found.size();
+        if (needSave) save();
+        return result;
     }
 
     private void walk(Context c, Uri tree, String dirId, String relDir, String rootId,
@@ -474,14 +566,22 @@ public final class LibraryRef {
      *
      * @return number of new tracks (duplicates are skipped)
      */
-    public synchronized int addDocuments(Context c, List<Uri> uris) {
-        if (corrupt || uris == null || uris.isEmpty()) return 0;
+    public int addDocuments(Context c, List<Uri> uris) {
+        if (uris == null || uris.isEmpty()) return 0;
+        final Set<String> known;
+        synchronized (this) {
+            if (corrupt) return 0;
+            known = new HashSet<>(byUri.keySet());
+        }
         ContentResolver cr = c.getContentResolver();
-        int added = 0;
+        // Every provider round trip (path, display name, size/mtime) happens before the index
+        // monitor is taken, so importing N documents never blocks a lookup.
+        List<String> dirs = new ArrayList<>();
+        List<Track> candidates = new ArrayList<>();
         for (Uri uri : uris) {
             if (uri == null) continue;
-            if (existingByUri(uri.toString()) != null) continue;   // same document imported twice
-            String path = documentPath(uri);                       // "Music/Album/x.flac" or null
+            if (known.contains(uri.toString())) continue;           // same document imported twice
+            String path = documentPath(uri);                        // "Music/Album/x.flac" or null
             String dir;
             String rel;
             if (path != null) {
@@ -495,17 +595,29 @@ public final class LibraryRef {
             String display = displayName(cr, uri);
             if (rel.isEmpty()) rel = cleanSegment(display);
             if (rel.isEmpty()) rel = "audio-" + Integer.toHexString(uri.hashCode());
-            Root root = syntheticRoot(dir);
-            if (track(root.id, rel) != null) continue;              // same root + rel
             long[] stamp = stat(cr, uri);
             Track t = new Track();
-            t.rootId = root.id;
             t.rel = rel;
             t.uri = uri.toString();
             t.size = stamp[0];
             t.mtime = stamp[1];
-            tracks.add(t);
-            added++;
+            dirs.add(dir);
+            candidates.add(t);
+        }
+        int added = 0;
+        synchronized (this) {
+            if (corrupt) return 0;
+            for (int i = 0; i < candidates.size(); i++) {
+                Track t = candidates.get(i);
+                if (byUri.containsKey(t.uri)) continue;             // duplicate inside this batch
+                Root root = syntheticRoot(dirs.get(i));
+                if (byVirtual.containsKey(trackKey(root.id, t.rel))) continue;   // same root + rel
+                t.rootId = root.id;
+                tracks.add(t);
+                byUri.put(t.uri, t);
+                byVirtual.put(trackKey(t.rootId, t.rel), t);
+                added++;
+            }
         }
         if (added > 0) save();
         return added;
@@ -528,28 +640,38 @@ public final class LibraryRef {
     }
 
     private Track existingByUri(String uri) {
-        for (Track t : tracks) if (t.uri.equals(uri)) return t;
-        return null;
+        return uri == null ? null : byUri.get(uri);
     }
 
     // ------------------------------------------------------------ mutation
 
-    public synchronized boolean removeTrack(Track t) {
-        if (t == null || corrupt) return false;
-        boolean removed = tracks.removeIf(x -> x.rootId.equals(t.rootId) && x.rel.equals(t.rel));
+    public boolean removeTrack(Track t) {
+        if (t == null) return false;
+        boolean removed;
+        synchronized (this) {
+            if (corrupt) return false;
+            removed = tracks.removeIf(x -> x.rootId.equals(t.rootId) && x.rel.equals(t.rel));
+            if (removed) reindex();
+        }
         if (removed) save();
         return removed;
     }
 
     /** Removes a root and every reference below it; the user's files are untouched. */
-    public synchronized boolean removeRoot(Root r) {
-        if (r == null || corrupt) return false;
-        for (Track t : tracksOf(r.id)) {
-            broken.remove(t.uri);
-            tagCache.remove(t.uri);
+    public boolean removeRoot(Root r) {
+        if (r == null) return false;
+        boolean removed;
+        synchronized (this) {
+            if (corrupt) return false;
+            for (Track t : tracks) {
+                if (!t.rootId.equals(r.id)) continue;
+                broken.remove(t.uri);
+                tagCache.remove(t.uri);
+            }
+            removed = roots.removeIf(x -> x.id.equals(r.id));
+            tracks.removeIf(t -> t.rootId.equals(r.id));
+            if (removed) reindex();
         }
-        boolean removed = roots.removeIf(x -> x.id.equals(r.id));
-        tracks.removeIf(t -> t.rootId.equals(r.id));
         if (removed) save();
         return removed;
     }
@@ -585,7 +707,9 @@ public final class LibraryRef {
             Tags.invalidate(uri);
         }
         try {
-            info = Tags.read(app, uri);
+            // No cover art here on purpose: this Info lives in the bounded tagCache and is only
+            // ever read for text. The cover loader opens the document itself when it needs art.
+            info = Tags.read(app, uri, false);
         } catch (Throwable e) {
             synchronized (this) {
                 broken.add(t.uri);
@@ -593,6 +717,8 @@ public final class LibraryRef {
             Diag.log("tag read failed (marked invalid) " + t.rel + ": " + e);
             return new Tags.Info();
         }
+        // Defensive: a caller supplied Info must not smuggle artwork into the long lived cache.
+        info.cover = null;
         synchronized (this) {
             tagCache.put(t.uri, new CachedTag(t.size, t.mtime, info));
             broken.remove(t.uri);
@@ -761,19 +887,15 @@ public final class LibraryRef {
         return n.replace('/', '_');
     }
 
-    /** One path segment of a SAF display name, safe for JSON keys and virtual paths. */
+    /**
+     * One path segment of a SAF display name, safe for JSON keys and virtual paths.
+     *
+     * <p>The rules (control characters and the reserved set to '_', no leading dots, 80 characters)
+     * are {@link Paths#sanitize(String)}; a second copy here is how two components end up
+     * disagreeing about whether a document name is a valid virtual path.
+     */
     public static String cleanSegment(String seg) {
-        if (seg == null) return "";
-        StringBuilder sb = new StringBuilder();
-        for (char ch : seg.toCharArray()) {
-            if (ch < 32 || ch == '/' || ch == '\\' || ch == ':' || ch == '*' || ch == '?'
-                    || ch == '"' || ch == '<' || ch == '>' || ch == '|') sb.append('_');
-            else sb.append(ch);
-        }
-        String s = sb.toString().trim();
-        while (s.startsWith(".")) s = s.substring(1);
-        if (s.length() > 80) s = s.substring(0, 80);
-        return s;
+        return Paths.sanitize(seg);
     }
 
     // ------------------------------------------------------------ io helpers

@@ -139,14 +139,16 @@ static int nd_decode_scalar(nd_br *br, int k, int bps, uint32_t *out)
     x = (uint32_t)pre;
     if (k != 1) {
         uint32_t extra;
-        if (k < 1 || k > 32) return -1;
+        if (k < 1 || k > 31) return -1;
+        /* audit #17: peek already pulled the k bits into the window, so drop
+         * them directly instead of recomputing the same bits via skip. */
         if (nd_br_peek(br, k, &extra)) return -1;
-        x = (x << k) - x;                          /* pre * (2^k - 1) */
+        x = (x << (unsigned)k) - x;                /* pre * (2^k - 1) */
         if (extra > 1) {
             x += extra - 1;
-            if (nd_br_skip(br, (size_t)k)) return -1;
+            nd_br_drop(br, (unsigned)k);
         } else {
-            if (nd_br_skip(br, (size_t)(k - 1))) return -1;
+            nd_br_drop(br, (unsigned)(k - 1));
         }
     }
     *out = x;
@@ -208,8 +210,9 @@ static int nd_rice_decompress(nd_alac_dec *d, int32_t *out, int frames,
 static void nd_lpc_prediction(int32_t *residual, int32_t *out, int frames,
                               int bps, int16_t *coefs, int order, int quant)
 {
-    uint32_t *pred = (uint32_t *)out;
     int       i;
+    /* audit #10: no more (uint32_t *) punning of the int32_t buffer (strict
+     * aliasing UB); 32-bit wraparound is expressed with explicit casts. */
 
     out[0] = residual[0];
     if (frames <= 1) return;
@@ -228,7 +231,7 @@ static void nd_lpc_prediction(int32_t *residual, int32_t *out, int frames,
         out[i] = nd_sign_extend((uint32_t)out[i - 1] + (uint32_t)residual[i], bps);
 
     for (; i < frames; i++) {
-        uint32_t d     = pred[i - 1 - order];
+        uint32_t d     = (uint32_t)out[i - 1 - order];
         uint32_t error = (uint32_t)residual[i];
         uint32_t acc   = 0;
         int64_t  val;
@@ -237,7 +240,7 @@ static void nd_lpc_prediction(int32_t *residual, int32_t *out, int frames,
         int      j;
 
         for (j = 0; j < order; j++)
-            acc += (uint32_t)((int32_t)(pred[i - order + j] - d)) *
+            acc += (uint32_t)(int32_t)((uint32_t)out[i - order + j] - d) *
                    (uint32_t)(int32_t)coefs[j];
 
         val = ((int64_t)(int32_t)acc + ((int64_t)1 << (quant - 1))) >> quant;
@@ -249,7 +252,7 @@ static void nd_lpc_prediction(int32_t *residual, int32_t *out, int frames,
         if (error_sign) {
             for (j = 0; j < order &&
                         (int32_t)(error * (uint32_t)error_sign) > 0; j++) {
-                int32_t b    = (int32_t)(d - pred[i - order + j]);
+                int32_t b    = (int32_t)(d - (uint32_t)out[i - order + j]);
                 int32_t sgn  = nd_sign_only(b) * error_sign;
 
                 coefs[j] = (int16_t)((int32_t)coefs[j] - sgn);
@@ -265,19 +268,20 @@ static void nd_lpc_prediction(int32_t *residual, int32_t *out, int frames,
 static void nd_decorrelate_stereo(int32_t *buf[2], int frames,
                                   int shift, int weight)
 {
-    uint32_t *left  = (uint32_t *)buf[0];
-    uint32_t *right = (uint32_t *)buf[1];
-    int       i;
+    int32_t *left  = buf[0];
+    int32_t *right = buf[1];
+    int      i;
 
+    /* audit #10: same as above - no (uint32_t *) punning, explicit casts. */
     for (i = 0; i < frames; i++) {
-        uint32_t a = left[i];
-        uint32_t b = right[i];
+        uint32_t a = (uint32_t)left[i];
+        uint32_t b = (uint32_t)right[i];
 
         a -= (uint32_t)((int32_t)(b * (uint32_t)weight) >> shift);
         b += a;
 
-        left[i]  = b;
-        right[i] = a;
+        left[i]  = (int32_t)b;
+        right[i] = (int32_t)a;
     }
 }
 

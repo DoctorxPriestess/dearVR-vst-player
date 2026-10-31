@@ -18,7 +18,9 @@ target_include_directories(vstdecode PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 
-target_compile_options(vstdecode PRIVATE -O2 -Wall -Wno-unused-function)
+# audit #22: keep -Wextra on; the unused static inline (nd_rd_u24be) is gone,
+# so -Wno-unused-function is no longer needed.
+target_compile_options(vstdecode PRIVATE -O2 -Wall -Wextra)
 
 # Android logging (optional; absent on the PC test build).
 find_library(nd_android_log log)

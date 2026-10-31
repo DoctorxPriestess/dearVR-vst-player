@@ -12,7 +12,11 @@
                             (uint32_t)(uint8_t)(c) << 8  | \
                             (uint32_t)(uint8_t)(d))
 
-#define ND_MP4_MAX_MOOV_BYTES ((size_t)64 * 1024 * 1024)
+/* audit #9: the whole moov is read into memory, so keep its cap bounded.  It
+ * cannot go below the size of a legitimate embedded cover art: the in-repo
+ * test asset m4a_bigcover.m4a has an 18.2 MB moov in an 18.27 MB file.
+ * 32 MB accepts that with headroom while still halving the old 64 MB cap. */
+#define ND_MP4_MAX_MOOV_BYTES ((size_t)32 * 1024 * 1024)
 #define ND_MP4_MAX_PACKETS    ((uint32_t)8 * 1000 * 1000)
 #define ND_MP4_MAX_STSC       ((uint32_t)1000 * 1000)
 
@@ -51,9 +55,10 @@ static void nd_track_free(nd_track *t)
     memset(t, 0, sizeof(*t));
 }
 
-/* Iterate the boxes in [start, end).  Returns 1 with the next box, 0 at the
- * end of the range and -1 for malformed data. */
-static int nd_next_box(const uint8_t *b, size_t start, size_t end, size_t *pos,
+/* Iterate the boxes in [*pos, end).  Returns 1 with the next box, 0 at the
+ * end of the range and -1 for malformed data.  The range start is implicit in
+ * *pos (the old explicit `start` argument was never read, -Wextra). */
+static int nd_next_box(const uint8_t *b, size_t end, size_t *pos,
                        uint32_t *type, size_t *payload_off, size_t *payload_len)
 {
     size_t   off = *pos;
@@ -131,7 +136,7 @@ static int nd_walk_sample_entry_children(const uint8_t *b, size_t start,
     while (1) {
         uint32_t type;
         size_t   po, pl;
-        int      r = nd_next_box(b, start, end, &pos, &type, &po, &pl);
+        int      r = nd_next_box(b, end, &pos, &type, &po, &pl);
 
         if (r == 0) break;
         if (r < 0) return 0;
@@ -206,6 +211,8 @@ static int nd_parse_stsz(nd_track *t, const uint8_t *b, size_t po, size_t pl)
     t->uniform_size = uniform;
     if (uniform == 0) {
         if ((size_t)count > (pl - 12) / 4) return -1;
+        /* audit #19: release a previous table if a duplicate stsz appears. */
+        free(t->sizes);
         t->sizes = (uint32_t *)malloc((size_t)count * sizeof(uint32_t));
         if (!t->sizes) return -1;
         for (i = 0; i < count; i++)
@@ -225,6 +232,8 @@ static int nd_parse_stz2(nd_track *t, const uint8_t *b, size_t po, size_t pl)
     if (count == 0 || count > ND_MP4_MAX_PACKETS) return -1;
     t->sample_count = count;
     t->uniform_size = 0;
+    /* audit #19: release a previous table if stz2/stsz is duplicated. */
+    free(t->sizes);
     t->sizes = (uint32_t *)calloc(count, sizeof(uint32_t));
     if (!t->sizes) return -1;
 
@@ -257,6 +266,9 @@ static int nd_parse_stsc(nd_track *t, const uint8_t *b, size_t po, size_t pl)
     count = nd_rd_u32be(b + po + 4);
     if (count == 0 || count > ND_MP4_MAX_STSC) return -1;
     if ((size_t)count > (pl - 8) / 12) return -1;
+    /* audit #19: release a previous table if stsc is duplicated. */
+    free(t->stsc_first);
+    free(t->stsc_spc);
     t->stsc_first = (uint32_t *)malloc((size_t)count * sizeof(uint32_t));
     t->stsc_spc   = (uint32_t *)malloc((size_t)count * sizeof(uint32_t));
     if (!t->stsc_first || !t->stsc_spc) return -1;
@@ -266,6 +278,10 @@ static int nd_parse_stsc(nd_track *t, const uint8_t *b, size_t po, size_t pl)
         if (t->stsc_first[i] == 0 || t->stsc_spc[i] == 0) return -1;
         if (i && t->stsc_first[i] <= t->stsc_first[i - 1]) return -1;
     }
+    /* audit #19: the spec requires the first chunk index to be 1; otherwise
+     * chunk 1 gets the wrong samples-per-chunk and every packet boundary is
+     * shifted (wrong audio), so reject instead of decoding silently wrong. */
+    if (t->stsc_first[0] != 1) return -1;
     t->stsc_count = count;
     t->have_stsc   = 1;
     return 0;
@@ -281,6 +297,8 @@ static int nd_parse_stco(nd_track *t, const uint8_t *b, size_t po, size_t pl,
     count = nd_rd_u32be(b + po + 4);
     if (count == 0 || count > ND_MP4_MAX_PACKETS) return -1;
     if ((size_t)count > (pl - 8) / stride) return -1;
+    /* audit #19: release a previous table if stco/co64 is duplicated. */
+    free(t->chunks);
     t->chunks = (uint64_t *)malloc((size_t)count * sizeof(uint64_t));
     if (!t->chunks) return -1;
     for (i = 0; i < count; i++) {
@@ -299,7 +317,7 @@ static int nd_parse_stbl(nd_track *t, const uint8_t *b, size_t off, size_t len)
     size_t   po, pl;
 
     while (1) {
-        int r = nd_next_box(b, off, end, &pos, &type, &po, &pl);
+        int r = nd_next_box(b, end, &pos, &type, &po, &pl);
         if (r == 0) break;
         if (r < 0) return -1;
         if (type == FOURCC('s', 't', 's', 'd')) {
@@ -326,7 +344,7 @@ static int nd_parse_minf(nd_track *t, const uint8_t *b, size_t off, size_t len)
     size_t   po, pl;
 
     while (1) {
-        int r = nd_next_box(b, off, end, &pos, &type, &po, &pl);
+        int r = nd_next_box(b, end, &pos, &type, &po, &pl);
         if (r == 0) break;
         if (r < 0) return -1;
         if (type == FOURCC('s', 't', 'b', 'l'))
@@ -342,7 +360,7 @@ static int nd_parse_mdia(nd_track *t, const uint8_t *b, size_t off, size_t len)
     size_t   po, pl;
 
     while (1) {
-        int r = nd_next_box(b, off, end, &pos, &type, &po, &pl);
+        int r = nd_next_box(b, end, &pos, &type, &po, &pl);
         if (r == 0) break;
         if (r < 0) return -1;
         if (type == FOURCC('m', 'i', 'n', 'f'))
@@ -359,7 +377,7 @@ static int nd_parse_trak(nd_track *t, const uint8_t *b, size_t off, size_t len)
 
     memset(t, 0, sizeof(*t));
     while (1) {
-        int r = nd_next_box(b, off, end, &pos, &type, &po, &pl);
+        int r = nd_next_box(b, end, &pos, &type, &po, &pl);
         if (r == 0) break;
         if (r < 0) return -1;
         if (type == FOURCC('m', 'd', 'i', 'a')) {
@@ -378,6 +396,11 @@ static int nd_build_offsets(nd_mp4 *m, nd_track *t)
     uint32_t i;
     size_t   s = 0;
     uint32_t e = 0;
+
+    /* audit #9: an ALAC packet is at least 3 bytes (header + residual + END),
+     * so cap the packet count by the file size instead of allocating a 64 MB
+     * offsets table on behalf of a few-MB malformed file. */
+    if ((uint64_t)t->sample_count > (uint64_t)m->file_size / 3u) return ND_ERR_DECODE;
 
     m->offsets = (uint64_t *)malloc((size_t)t->sample_count * sizeof(uint64_t));
     if (!m->offsets) return ND_ERR_DECODE;
@@ -506,7 +529,7 @@ int nd_mp4_open(nd_mp4 **out, const char *path, char *err, int errlen)
         int      found = 0;
 
         while (1) {
-            int r = nd_next_box(moov, 0, end, &pos, &type, &po, &pl);
+            int r = nd_next_box(moov, end, &pos, &type, &po, &pl);
             nd_track t;
             if (r == 0) break;
             if (r < 0) break;

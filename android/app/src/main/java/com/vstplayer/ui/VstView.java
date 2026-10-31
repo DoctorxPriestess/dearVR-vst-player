@@ -64,6 +64,11 @@ public class VstView extends LinearLayout {
                 return t;
             });
     private final Handler ui = new Handler(Looper.getMainLooper());
+    /**
+     * Same looper, separate queue for the render watchdogs: detaching the view drops only these,
+     * while the batch callbacks already posted on {@link #ui} still run.
+     */
+    private final Handler uiDelays = new Handler(Looper.getMainLooper());
 
     private final TextView statusPill;
     private final TextView pluginName;
@@ -76,6 +81,13 @@ public class VstView extends LinearLayout {
     private final List<Param> shown = new ArrayList<>();
     /** Parameter objects currently known to the adapter, used to tell a value update from a reload. */
     private final List<Param> known = new ArrayList<>();
+    /**
+     * Id of the parameter under the finger. Its label is owned by the slider while it is dragged, so
+     * a SET ack arriving in the middle of the gesture must not rewrite it.
+     */
+    private String draggingParamId;
+    /** True while a trailing parameter refresh is already queued for the next message. */
+    private boolean paramsPending;
 
     private final LinearLayout presetList;
     private final TextView presetNow;
@@ -211,7 +223,7 @@ public class VstView extends LinearLayout {
             List<File> files = inputFiles();
             if (selected.size() == files.size()) selected.clear();
             else selected.addAll(files);
-            refreshSourceRows();
+            applySourceMarks();
             updateRenderBtn();
         });
         srcHead.addView(all);
@@ -346,7 +358,7 @@ public class VstView extends LinearLayout {
         }
         if (confInt("render.autorun", 0, 0, 1) == 1 && !autorunDone) {
             autorunDone = true;
-            ui.postDelayed(() -> {
+            uiDelays.postDelayed(() -> {
                 if (vst.state() != Vst.READY) { Diag.log("autorun: engine not ready"); return; }
                 List<File> files = inputFiles();
                 if (files.isEmpty()) { Diag.log("autorun: no input files"); return; }
@@ -359,6 +371,18 @@ public class VstView extends LinearLayout {
     }
 
     public void onParams() {
+        // A SET ack arrives every ~40 ms while a value is pushed, and each one used to walk every
+        // bound row again. One trailing refresh per message turn is enough: it reads the current
+        // parameter state, so an update can never be lost to the coalescing.
+        if (paramsPending) return;
+        paramsPending = true;
+        ui.post(() -> {
+            paramsPending = false;
+            refreshParams();
+        });
+    }
+
+    private void refreshParams() {
         List<Param> all = vst.params();
         if (!all.isEmpty()) pluginMeta.setText("VST3 · " + all.size() + " 个参数 · 离线渲染");
         if (sameParams(known, all)) {
@@ -384,7 +408,7 @@ public class VstView extends LinearLayout {
             Object tag = paramList.getChildAt(i).getTag();
             if (!(tag instanceof Row)) continue;
             Row row = (Row) tag;
-            if (row.p != null) row.val.setText(row.p.valueText());
+            if (row.p != null && !row.p.id.equals(draggingParamId)) row.val.setText(row.p.valueText());
         }
     }
 
@@ -431,6 +455,8 @@ public class VstView extends LinearLayout {
         Icon star;
         Slider slider;
         boolean starOn;
+        /** Last whole percent shown while dragging; -1 when nothing was shown yet. */
+        int pct = -1;
     }
 
     private class ParamAdapter extends BaseAdapter {
@@ -471,12 +497,18 @@ public class VstView extends LinearLayout {
                 root.addView(top);
 
                 row.slider = new Slider(c).accent(Ui.ACC).thick(4f, 0f);
-                row.slider.setOnChange(new Slider.OnChange() {
+                row.slider.onChange(new Slider.OnChange() {
                     @Override public void onChanging(float v) {
-                        row.val.setText(String.format(Locale.US, "%.0f%%", v * 100));
+                        if (row.p != null) draggingParamId = row.p.id;
+                        int pct = Math.round(v * 100f);
+                        if (pct != row.pct) {
+                            row.pct = pct;
+                            row.val.setText(String.format(Locale.US, "%.0f%%", v * 100));
+                        }
                     }
                     @Override public void onChanged(float v) {
                         if (row.p == null) return;
+                        draggingParamId = null;
                         row.p.norm = v;
                         Diag.log("drag " + row.p.name + " " + v);
                         vst.setParam(row.p.id, v);
@@ -496,6 +528,7 @@ public class VstView extends LinearLayout {
 
             boolean rebind = row.p != p;
             row.p = p;
+            if (rebind) row.pct = -1;
             row.name.setText(p.name);
             row.val.setText(p.valueText());
             boolean starOn = favs.contains(p.id);
@@ -838,6 +871,7 @@ public class VstView extends LinearLayout {
      */
     private void refreshSourceRows() {
         srcList.removeAllViews();
+        srcRestyles.clear();
         final Context c = getContext();
         List<File> files = inputFiles();
         if (files.isEmpty()) {
@@ -884,11 +918,9 @@ public class VstView extends LinearLayout {
             final List<File> files = new ArrayList<>();
             for (LibraryRef.Track t : lib.tracksOf(root.id)) files.add(LibraryRef.virtualFile(t));
             if (files.isEmpty()) continue;
-            int on = 0;
-            for (File f : files) if (selected.contains(f)) on++;
             final String key = "sroot:" + root.id;
             final boolean open = srcExpanded.contains(key);
-            srcList.addView(sourceGroupRow(root.name, files.size() + " 首", on, files.size(), open, 0,
+            srcList.addView(sourceGroupRow(root.name, files.size() + " 首", files, open, 0,
                     () -> { toggleSrcGroup(key); refreshSourceRows(); },
                     () -> toggleSelection(files)));
             if (!open) continue;
@@ -916,20 +948,28 @@ public class VstView extends LinearLayout {
     /**
      * Picks the files to render by tag instead of by folder: artist → album → tracks. The marker on
      * a group selects or clears everything below it, which is how a whole album gets queued.
+     *
+     * <p>Only metadata that is already cached is used for this pass: the files still missing from
+     * the cache are read on a background lane and the grouping is rebuilt once they are in, so a
+     * hundred documents are never opened on the UI thread.
      */
     private void refreshTagRows(List<File> files) {
         final Context c = getContext();
         java.util.Map<String, java.util.Map<String, List<File>>> tree = new java.util.LinkedHashMap<>();
         LibraryRef refs = getContext() == null ? null
                 : LibraryRef.get(getContext().getApplicationContext());
+        final List<File> unread = new ArrayList<>();
         for (File f : files) {
             Tags.Info t = srcTags.get(f.getAbsolutePath());
             if (t == null) {
                 // References: prefer the already warm cache so grouping stays off the SAF path.
                 LibraryRef.Track track = refs != null && LibraryRef.isVirtual(f) ? refs.trackByVirtual(f) : null;
                 t = track == null ? null : refs.cachedTags(track);
-                if (t == null) t = Tags.read(f);
-                srcTags.put(f.getAbsolutePath(), t);
+                if (t != null) srcTags.put(f.getAbsolutePath(), t);
+            }
+            if (t == null) {
+                unread.add(f);
+                t = new Tags.Info();   // grouped as "unknown" until the background read lands
             }
             String artist = t.albumArtist != null && !t.albumArtist.trim().isEmpty() ? t.albumArtist.trim()
                     : (t.artist != null && !t.artist.trim().isEmpty() ? t.artist.trim() : "未知艺术家");
@@ -948,10 +988,8 @@ public class VstView extends LinearLayout {
             for (List<File> fs : albums.values()) allOfArtist.addAll(fs);
             String key = "sa:" + artist;
             boolean open = srcExpanded.contains(key);
-            int on = 0;
-            for (File f : allOfArtist) if (selected.contains(f)) on++;
             srcList.addView(sourceGroupRow(artist, albums.size() + " 张专辑 · " + allOfArtist.size() + " 首",
-                    on, allOfArtist.size(), open, 0,
+                    allOfArtist, open, 0,
                     () -> { toggleSrcGroup(key); refreshSourceRows(); },
                     () -> { toggleSelection(allOfArtist); }));
             if (!open) continue;
@@ -962,15 +1000,40 @@ public class VstView extends LinearLayout {
                 fs.sort((a, b) -> a.getName().compareToIgnoreCase(b.getName()));
                 String aKey = "sb:" + artist + "\u0001" + album;
                 boolean aOpen = srcExpanded.contains(aKey);
-                int aOn = 0;
-                for (File f : fs) if (selected.contains(f)) aOn++;
-                srcList.addView(sourceGroupRow("　" + album, fs.size() + " 首", aOn, fs.size(), aOpen, 1,
+                srcList.addView(sourceGroupRow("　" + album, fs.size() + " 首", fs, aOpen, 1,
                         () -> { toggleSrcGroup(aKey); refreshSourceRows(); },
                         () -> toggleSelection(fs)));
                 if (!aOpen) continue;
                 for (File f : fs) srcList.addView(sourceRow(f, 2));
             }
         }
+        if (!unread.isEmpty()) readSrcTags(unread);
+    }
+
+    /**
+     * Fills the tag cache for the files the grouping could not use yet, then rebuilds the picker
+     * once. A newer pass (the user opened another folder) silently supersedes this one.
+     */
+    private void readSrcTags(final List<File> files) {
+        final int gen = ++srcTagGen;
+        final java.util.concurrent.ExecutorService lane = TAG_READ;
+        lane.execute(() -> {
+            for (File f : files) {
+                if (gen != srcTagGen) return;
+                Tags.Info t;
+                try {
+                    t = Tags.read(f);
+                } catch (Throwable e) {
+                    Diag.log("src tag read failed " + f.getName() + ": " + e);
+                    t = new Tags.Info();
+                }
+                srcTags.put(f.getAbsolutePath(), t);
+            }
+            ui.post(() -> {
+                if (gen != srcTagGen || srcMode != 1 || getContext() == null) return;
+                refreshSourceRows();
+            });
+        });
     }
 
     private void toggleSrcGroup(String key) {
@@ -983,34 +1046,30 @@ public class VstView extends LinearLayout {
         for (File f : group) if (!selected.contains(f)) { all = false; break; }
         if (all) selected.removeAll(group);
         else selected.addAll(group);
-        refreshSourceRows();
+        applySourceMarks();
         updateRenderBtn();
     }
 
-    private View sourceGroupRow(String title, String meta, int on, int total, boolean open, int depth,
+    /** Restyles every built source row after the selection changed; no view is created or measured. */
+    private void applySourceMarks() {
+        for (int i = 0; i < srcRestyles.size(); i++) srcRestyles.get(i).run();
+    }
+
+    private View sourceGroupRow(String title, String meta, List<File> members, boolean open, int depth,
                                 Runnable onToggle, Runnable onSelect) {
         final Context c = getContext();
-        boolean all = total > 0 && on == total;
-        boolean some = on > 0 && !all;
         LinearLayout row = Ui.row(c);
-        row.setBackground(Ui.bg(all ? Ui.withAlpha(Ui.ACC, 0.14f) : Ui.CARD, 12, c));
         int pad = Ui.dp(c, 14) + Ui.dp(c, 14) * depth;
         row.setPadding(pad, Ui.dp(c, 11), Ui.dp(c, 14), Ui.dp(c, 11));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT,
-                LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = Ui.dp(c, 8);
         FrameLayout mark = new FrameLayout(c);
-        mark.setBackground(Ui.circle(all ? Ui.ACC
-                : (some ? Ui.withAlpha(Ui.ACC, 0.5f) : Ui.withAlpha(0xFFFFFFFF, 0.14f)), c));
-        if (all) {
-            Icon ic = new Icon(c).name("check").tint(0xFF000000);
-            FrameLayout.LayoutParams ilp = new FrameLayout.LayoutParams(Ui.dp(c, 14), Ui.dp(c, 14));
-            ilp.gravity = Gravity.CENTER;
-            mark.addView(ic, ilp);
-        }
+        // The check mark always exists and is only shown/hidden, so a tick never needs a rebuild.
+        Icon check = new Icon(c).name("check").tint(0xFF000000);
+        FrameLayout.LayoutParams ilp = new FrameLayout.LayoutParams(Ui.dp(c, 14), Ui.dp(c, 14));
+        ilp.gravity = Gravity.CENTER;
+        mark.addView(check, ilp);
         mark.setOnClickListener(v -> onSelect.run());
         row.addView(mark, new LinearLayout.LayoutParams(Ui.dp(c, 22), Ui.dp(c, 22)));
-        TextView name = Ui.tv(c, title, 14, all ? Ui.TXT : Ui.SUB, false);
+        TextView name = Ui.tv(c, title, 14, Ui.SUB, false);
         name.setMaxLines(1);
         name.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
         LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f);
@@ -1018,20 +1077,16 @@ public class VstView extends LinearLayout {
         row.addView(name, nlp);
         row.addView(Ui.tv(c, meta + " " + (open ? "⌄" : "›"), 11.5f, Ui.SUB2, false));
         row.setOnClickListener(v -> onToggle.run());
+        addSrcRestyle(row, mark, check, name, members, true);
         return row;
     }
 
     private void addSourceFolder(final File dir, final int depth) {
         final Context c = getContext();
         final List<File> inside = Paths.audioFiles(dir);
-        int on = 0;
-        for (File f : inside) if (selected.contains(f)) on++;
-        final boolean all = !inside.isEmpty() && on == inside.size();
-        final boolean some = on > 0 && !all;
         final boolean open = srcExpanded.contains(dir.getAbsolutePath());
 
         LinearLayout row = Ui.row(c);
-        row.setBackground(Ui.bg(all ? Ui.withAlpha(Ui.ACC, 0.14f) : Ui.CARD, 12, c));
         int pad = Ui.dp(c, 14) + Ui.dp(c, 14) * Math.min(depth, 6);
         row.setPadding(pad, Ui.dp(c, 11), Ui.dp(c, 14), Ui.dp(c, 11));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT,
@@ -1039,23 +1094,14 @@ public class VstView extends LinearLayout {
         lp.bottomMargin = Ui.dp(c, 8);
 
         FrameLayout mark = new FrameLayout(c);
-        mark.setBackground(Ui.circle(all ? Ui.ACC
-                : (some ? Ui.withAlpha(Ui.ACC, 0.5f) : Ui.withAlpha(0xFFFFFFFF, 0.14f)), c));
-        if (all) {
-            Icon ic = new Icon(c).name("check").tint(0xFF000000);
-            FrameLayout.LayoutParams ilp = new FrameLayout.LayoutParams(Ui.dp(c, 14), Ui.dp(c, 14));
-            ilp.gravity = Gravity.CENTER;
-            mark.addView(ic, ilp);
-        }
-        mark.setOnClickListener(v -> {
-            if (all) selected.removeAll(inside);
-            else selected.addAll(inside);
-            refreshSourceRows();
-            updateRenderBtn();
-        });
+        Icon check = new Icon(c).name("check").tint(0xFF000000);
+        FrameLayout.LayoutParams ilp = new FrameLayout.LayoutParams(Ui.dp(c, 14), Ui.dp(c, 14));
+        ilp.gravity = Gravity.CENTER;
+        mark.addView(check, ilp);
+        mark.setOnClickListener(v -> toggleSelection(inside));
         row.addView(mark, new LinearLayout.LayoutParams(Ui.dp(c, 22), Ui.dp(c, 22)));
 
-        TextView name = Ui.tv(c, dir.getName(), 14, all ? Ui.TXT : Ui.SUB, false);
+        TextView name = Ui.tv(c, dir.getName(), 14, Ui.SUB, false);
         name.setMaxLines(1);
         name.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
         LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f);
@@ -1069,6 +1115,7 @@ public class VstView extends LinearLayout {
             refreshSourceRows();
         });
         srcList.addView(row, lp);
+        addSrcRestyle(row, mark, check, name, inside, false);
         if (!open) return;
 
         File[] arr = dir.listFiles();
@@ -1089,24 +1136,19 @@ public class VstView extends LinearLayout {
 
     private View sourceRow(final File f, int depth) {
         final Context c = getContext();
-        boolean on = selected.contains(f);
         LinearLayout row = Ui.row(c);
-        row.setBackground(Ui.bg(on ? Ui.withAlpha(Ui.ACC, 0.14f) : Ui.CARD, 12, c));
         int pad = Ui.dp(c, 14) + Ui.dp(c, 14) * Math.min(depth, 6);
         row.setPadding(pad, Ui.dp(c, 11), Ui.dp(c, 14), Ui.dp(c, 11));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT,
                 LayoutParams.WRAP_CONTENT);
         lp.bottomMargin = Ui.dp(c, 8);
         FrameLayout mark = new FrameLayout(c);
-        mark.setBackground(Ui.circle(on ? Ui.ACC : Ui.withAlpha(0xFFFFFFFF, 0.14f), c));
-        if (on) {
-            Icon ic = new Icon(c).name("check").tint(0xFF000000);
-            FrameLayout.LayoutParams ilp = new FrameLayout.LayoutParams(Ui.dp(c, 14), Ui.dp(c, 14));
-            ilp.gravity = Gravity.CENTER;
-            mark.addView(ic, ilp);
-        }
+        Icon check = new Icon(c).name("check").tint(0xFF000000);
+        FrameLayout.LayoutParams ilp = new FrameLayout.LayoutParams(Ui.dp(c, 14), Ui.dp(c, 14));
+        ilp.gravity = Gravity.CENTER;
+        mark.addView(check, ilp);
         row.addView(mark, new LinearLayout.LayoutParams(Ui.dp(c, 22), Ui.dp(c, 22)));
-        TextView name = Ui.tv(c, f.getName(), 14, on ? Ui.TXT : Ui.SUB, false);
+        TextView name = Ui.tv(c, f.getName(), 14, Ui.SUB, false);
         name.setMaxLines(1);
         name.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
         LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f);
@@ -1114,10 +1156,43 @@ public class VstView extends LinearLayout {
         row.addView(name, nlp);
         row.setOnClickListener(v -> {
             if (!selected.remove(f)) selected.add(f);
-            refreshSourceRows();
+            applySourceMarks();
             updateRenderBtn();
         });
+        addSrcRestyle(row, mark, check, name, java.util.Collections.singletonList(f), false);
         return row;
+    }
+
+    /**
+     * Registers one source picker row for in-place restyling and applies its current state.
+     *
+     * <p>Ticking a file used to rebuild the whole picker: every row was dropped and recreated,
+     * together with a recursive directory walk. The row keeps the two backgrounds and the marker
+     * drawables it can switch between, so a tick only walks the rows that already exist.
+     */
+    private void addSrcRestyle(final LinearLayout row, final FrameLayout mark, final Icon check,
+                               final TextView name, final List<File> members, final boolean group) {
+        final Context c = getContext();
+        final android.graphics.drawable.GradientDrawable bgSel =
+                Ui.bg(Ui.withAlpha(Ui.ACC, 0.14f), 12, c);
+        final android.graphics.drawable.GradientDrawable bgNorm = Ui.bg(Ui.CARD, 12, c);
+        final android.graphics.drawable.GradientDrawable circleOn = Ui.circle(Ui.ACC, c);
+        final android.graphics.drawable.GradientDrawable circleSome =
+                group ? Ui.circle(Ui.withAlpha(Ui.ACC, 0.5f), c) : null;
+        final android.graphics.drawable.GradientDrawable circleOff =
+                Ui.circle(Ui.withAlpha(0xFFFFFFFF, 0.14f), c);
+        Runnable restyle = () -> {
+            int on = 0;
+            for (int i = 0; i < members.size(); i++) if (selected.contains(members.get(i))) on++;
+            boolean all = !members.isEmpty() && on == members.size();
+            boolean some = on > 0 && !all;
+            row.setBackground(all ? bgSel : bgNorm);
+            mark.setBackground(all ? circleOn : (some && circleSome != null ? circleSome : circleOff));
+            check.setVisibility(all ? VISIBLE : GONE);
+            name.setTextColor(all ? Ui.TXT : Ui.SUB);
+        };
+        srcRestyles.add(restyle);
+        restyle.run();
     }
 
     private void updateRenderBtn() {
@@ -1223,10 +1298,24 @@ public class VstView extends LinearLayout {
     private boolean resetPerFile = true;
     /** Folders / tag groups the user opened in the render pane's source picker. */
     private final java.util.Set<String> srcExpanded = new java.util.HashSet<>();
+    /** Restyle hooks of the source picker rows currently built (see {@link #addSrcRestyle}). */
+    private final List<Runnable> srcRestyles = new ArrayList<>();
+    /**
+     * Metadata lane for the "by tag" grouping. Never the render-prepare lane: a tag read must not
+     * queue behind a decode, and a decode must not queue behind a hundred document reads.
+     */
+    private static final java.util.concurrent.ExecutorService TAG_READ =
+            java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {
+                Thread t = new Thread(runnable, "src-tags");
+                t.setDaemon(true);
+                return t;
+            });
     /** 0 = pick sources by address (folder tree), 1 = pick them by tags (artist / album). */
     private int srcMode;
     private TextView srcModeAddr, srcModeTag;
-    private final java.util.Map<String, Tags.Info> srcTags = new java.util.HashMap<>();
+    private final java.util.Map<String, Tags.Info> srcTags = new java.util.concurrent.ConcurrentHashMap<>();
+    /** Generation of the background tag pass; a newer pass makes an older one stop. */
+    private volatile int srcTagGen;
     // A file whose decode failed while every lane was rendering gets one more attempt once the
     // main work is done — the platform ALAC decoder dies under full load and recovers when idle.
     private final List<File> retryFiles = new ArrayList<>();
@@ -1306,7 +1395,7 @@ public class VstView extends LinearLayout {
                 nextLaneSync();
                 // A guest that stops answering must not idle the batch: after this long its share
                 // goes to the lanes that do answer.
-                ui.postDelayed(() -> {
+                uiDelays.postDelayed(() -> {
                     if (!laneSynced[lane] && !laneDead[lane]) {
                         laneDead[lane] = true;
                         Diag.log("engine" + lane + " param sync timeout; lane dropped");
@@ -1424,7 +1513,7 @@ public class VstView extends LinearLayout {
         if (c != null) {
             final Context app = c.getApplicationContext();
             // Warm the engine again so parameter edits and the next batch do not need a relaunch.
-            ui.postDelayed(() -> {
+            uiDelays.postDelayed(() -> {
                 if (getContext() != null && !batchRunning) vst.restart(app, null);
             }, 700);
         }
@@ -1999,6 +2088,12 @@ public class VstView extends LinearLayout {
                 v.checkBatchDone();
             });
         });
+    }
+
+    @Override protected void onDetachedFromWindow() {
+        // A 45 s lane watchdog must not keep a destroyed page (and its Activity context) alive.
+        uiDelays.removeCallbacksAndMessages(null);
+        super.onDetachedFromWindow();
     }
 
     // ------------------------------------------------------------------- helpers

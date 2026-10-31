@@ -85,8 +85,7 @@ public class EngineService extends Service {
         if (pct >= 0) b.setProgress(100, Math.max(0, Math.min(100, pct)), false);
         Intent open = new Intent(this, com.vstplayer.MainActivity.class);
         open.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        b.setContentIntent(PendingIntent.getActivity(this, 0, open,
-                Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0));
+        b.setContentIntent(PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE));
         // mediaPlayback is the type OEM power managers treat like a music app: a plain dataSync
         // foreground service was still frozen about 45 s after backgrounding on OriginOS, which
         // stalls the render engine behind a full stdout pipe.
@@ -100,14 +99,11 @@ public class EngineService extends Service {
         return START_NOT_STICKY;
     }
 
-    // stopForeground(boolean) is the pre-API-24 spelling; both branches have to stay for minSdk 24.
-    @SuppressWarnings("deprecation")
     @Override
     public void onDestroy() {
         running = false;
         try {
-            if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE);
-            else stopForeground(true);
+            stopForeground(STOP_FOREGROUND_REMOVE);
         } catch (Throwable ignored) {
         }
         super.onDestroy();

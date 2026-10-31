@@ -66,7 +66,22 @@ public class Engine {
     }
 
     public boolean isRunning() {
-        return proc != null && proc.isAlive();
+        return alive(proc);
+    }
+
+    /**
+     * {@link Process#isAlive()} is API 26 while minSdk is 24: on Android 7.x the direct call
+     * throws {@code NoSuchMethodError}. Polling {@code exitValue()} answers the same question on
+     * every version, at the price of one exception on the "still running" path.
+     */
+    private static boolean alive(Process p) {
+        if (p == null) return false;
+        try {
+            p.exitValue();
+            return false;
+        } catch (IllegalThreadStateException running) {
+            return true;
+        }
     }
 
     /** True once the engine has written anything to stdout. */
@@ -81,7 +96,7 @@ public class Engine {
      */
     public synchronized void reapStrays() {
         Process p = proc;
-        if (p != null && p.isAlive()) return;
+        if (alive(p)) return;
         synchronized (LIVE) {
             for (Engine other : LIVE) {
                 // "Owns guests" covers a lane that is still between fork and exec: its process

@@ -1,5 +1,6 @@
 package com.vstplayer.core;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.net.Uri;
 
@@ -8,6 +9,7 @@ import java.io.IOException;
 import java.nio.charset.Charset;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -53,7 +55,12 @@ public final class Tags {
     }
 
     private static volatile Resolver resolver;
-    /** Application context used to open references from a plain {@code Tags.read(File)} call. */
+    /**
+     * Application context used to open references from a plain {@code Tags.read(File)} call.
+     * Holding it statically is deliberate and safe here: it is the process-wide application
+     * context, so it cannot outlive the process that owns it.
+     */
+    @SuppressLint("StaticFieldLeak")
     private static Context app;
 
     private static final Map<String, Info> URI_CACHE =
@@ -350,7 +357,7 @@ public final class Tags {
             String kv = new String(b, p, n, UTF8);
             p += n;
             int eq = kv.indexOf('=');
-            if (eq > 0) map.put(kv.substring(0, eq).toLowerCase(), kv.substring(eq + 1));
+            if (eq > 0) map.put(kv.substring(0, eq).toLowerCase(Locale.ROOT), kv.substring(eq + 1));
         }
         return map;
     }

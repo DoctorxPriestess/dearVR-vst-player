@@ -8,6 +8,9 @@
 # Usage: tools/tests/run.sh
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+# javac/java are native Windows binaries here, so hand them a mixed path (D:/...) instead of
+# the MSYS one (/d/...) — MSYS_NO_PATHCONV=1 (set by build.sh) disables the automatic rewrite.
+if command -v cygpath >/dev/null 2>&1; then ROOT=$(cygpath -m "$ROOT"); fi
 SRC="$ROOT/android/app/src/main/java/com/vstplayer/core"
 OUT="$ROOT/tools/tests/build"
 

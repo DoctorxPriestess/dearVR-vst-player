@@ -30,6 +30,11 @@ else
     GRADLE_CMD="gradle"
 fi
 
+# MSYS_NO_PATHCONV=1 is on, so native tools (python, javac) need a Windows style path.
+native_path() {
+    if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi
+}
+
 gradle() {
     ( cd "$ROOT/android" && "$GRADLE_CMD" --console=plain -q "$@" )
 }
@@ -69,7 +74,7 @@ cmd_check() {
     echo "== host self checks =="
     "$ROOT/tools/tests/run.sh"
     echo "== style =="
-    python "$ROOT/tools/check_style.py"
+    python "$(native_path "$ROOT/tools/check_style.py")"
     echo "== compile gate =="
     "$ROOT/tools/gate.sh" check
 }

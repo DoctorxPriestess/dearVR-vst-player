@@ -60,6 +60,10 @@ android {
         // should not block an APK that installs and runs.
         abortOnError = false
         checkReleaseBuilds = false
+        // targetSdk 28 is a product decision: the library browses storage through legacy
+        // paths, so raising it would change file access semantics for every user.
+        // Play distribution is out of scope for this build.
+        disable += "ExpiredTargetSdkVersion"
     }
 
     packaging {

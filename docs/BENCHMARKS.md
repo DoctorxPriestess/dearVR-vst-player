@@ -17,7 +17,13 @@ line; the reported figure is the diag-timestamp delta from `shell onCreate`, i.e
 
 | Build | Run 1 | Run 2 | Run 3 | Median |
 | --- | --- | --- | --- | --- |
-| baseline (2026-10-31, pristine copy) | 4012 ms | 3684 ms | 3596 ms | **3684 ms** |
+| baseline (pristine copy) | 4012 ms | 3684 ms | 3596 ms | **3684 ms** |
+| optimized (2026-10-31) | 3771 ms | 3682 ms | 3657 ms | **3682 ms** |
+| optimized, final binary | 3520 ms | 3593 ms | – | **3557 ms** |
+
+These three runs are within noise of each other: the optimization round deliberately did not touch
+the startup path (asset extraction and wine bootstrap dominate), so the honest conclusion is
+"unchanged".
 
 ## First-run asset extraction
 
@@ -40,11 +46,16 @@ adb push boot.conf /data/local/tmp/ && adb shell run-as com.vstp cp /data/local/
 
 Then open the VST tab; `diag.log` reports per-file times and a `batch done` summary.
 
-Baseline batch (5 files / 7 slices / 2 lanes, sources = 620 s WAV, 24-bit FLAC, two 30 s m4a, 1 s WAV):
+Batch (5 files / 7 slices / 2 lanes, sources = 620 s WAV, 24-bit FLAC, two 30 s m4a, 1 s WAV):
 
 ```
-batch done: files=5 ok=5 failed=0 slices=7 lanes=2 total +66714ms
+baseline  : batch done: files=5 ok=5 failed=0 slices=7 lanes=2 total +66714ms
+optimized : batch done: files=5 ok=5 failed=0 slices=7 lanes=2 total +66988ms
+final     : batch done: files=5 ok=5 failed=0 slices=7 lanes=2 total +66754ms
 ```
+
+The three runs differ by <0.5 % (noise); the throughput work in this round was native decoding
+(-14.5 % on ALAC) rather than the render loop.
 
 The rendered WAVs are exported to the SAF folder chosen in the app. Because the whole pipeline is
 deterministic, the **sha256 of every output is a regression test**: re-running the same batch must
@@ -76,6 +87,6 @@ frame count** for the same scripted interaction rather than the percentage alone
 ls -l android/app/build/outputs/apk/standalone/debug/app-standalone-debug.apk
 ```
 
-Baseline: **278 920 586 bytes** (266 MiB, shown as 279 MB in the installer). ~298 MB of that is
+Baseline: **278 920 586 bytes**; optimized: **278 983 952 bytes** (+63 KB, +0.02 %). ~298 MB of that is
 the unpacked environment assets; the assets are already xz-compressed and are stored uncompressed
 in the APK (`noCompress "bin"`), so gzip would only waste install time.

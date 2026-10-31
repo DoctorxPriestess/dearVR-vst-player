@@ -229,7 +229,7 @@ public final class FastExtract {
             def.addHardlink(new File(destRoot, e.getLinkName()), out);
         } else if (e.isFile()) {
             try (OutputStream os = new FileOutputStream(out)) {
-                copy(tar, os, buf);
+                Io.copy(tar, os, buf);
             }
             if ((e.getMode() & 0111) != 0) {
                 try {
@@ -344,16 +344,12 @@ public final class FastExtract {
     private static void copyFile(File src, File dst) {
         try (InputStream in = new FileInputStream(src);
              OutputStream out = new FileOutputStream(dst)) {
-            copy(in, out, new byte[BUF]);
+            Io.copy(in, out, new byte[BUF]);
         } catch (IOException e) {
             Diag.log("copy fallback failed " + src + " -> " + dst + ": " + e);
         }
     }
 
-    private static void copy(InputStream in, OutputStream out, byte[] buf) throws IOException {
-        int n;
-        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-    }
 
     private static long assetSize(Context ctx, String name) {
         try (android.content.res.AssetFileDescriptor fd = ctx.getAssets().openFd(name)) {

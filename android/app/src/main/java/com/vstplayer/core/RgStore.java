@@ -239,8 +239,14 @@ public final class RgStore {
     private static byte[] readAll(InputStream in, int cap) throws IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream(8192);
         byte[] buf = new byte[8192];
+        int idle = 0;
         int n;
-        while ((n = in.read(buf)) > 0) {
+        while ((n = in.read(buf)) >= 0) {
+            if (n == 0) {
+                if (++idle > Io.MAX_ZERO_READS) throw new IOException("cache read made no progress");
+                continue;
+            }
+            idle = 0;
             if (out.size() + n > cap) throw new IOException("cache file too large");
             out.write(buf, 0, n);
         }

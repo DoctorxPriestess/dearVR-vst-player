@@ -343,13 +343,13 @@ public class Env {
         File tmp = new File(dest.getParentFile(), dest.getName() + ".new");
         try (InputStream in = ctx.getAssets().open(name);
              OutputStream out = new FileOutputStream(tmp)) {
-            copy(in, out, new byte[1 << 16]);
+            Io.copy(in, out, new byte[Io.BUF]);
         }
         if (!tmp.renameTo(dest)) {
             // rename cannot cross devices and can fail on some FUSE back-ends; fall back.
             try (InputStream in = ctx.getAssets().open(name);
                  OutputStream out = new FileOutputStream(dest)) {
-                copy(in, out, new byte[1 << 16]);
+                Io.copy(in, out, new byte[Io.BUF]);
             }
             //noinspection ResultOfMethodCallIgnored
             tmp.delete();
@@ -392,7 +392,7 @@ public class Env {
                         if (target.isFile() && target.canRead()) {
                             try (InputStream ti = new java.io.FileInputStream(target);
                                  OutputStream os2 = new FileOutputStream(out)) {
-                                copy(ti, os2, new byte[1 << 16]);
+                                Io.copy(ti, os2, new byte[Io.BUF]);
                             }
                         }
                     }
@@ -406,14 +406,14 @@ public class Env {
                         if (target.isFile()) {
                             try (InputStream ti = new java.io.FileInputStream(target);
                                  OutputStream os2 = new FileOutputStream(out)) {
-                                copy(ti, os2, new byte[1 << 16]);
+                                Io.copy(ti, os2, new byte[Io.BUF]);
                             }
                         }
                     }
                 } else if (e.isFile()) {
                     out.getParentFile().mkdirs();
                     try (OutputStream os = new FileOutputStream(out)) {
-                        copy(tar, os, buf);
+                        Io.copy(tar, os, buf);
                     }
                     if ((e.getMode() & 0111) != 0) {
                         try {
@@ -449,17 +449,12 @@ public class Env {
         }
     }
 
-    private static void copy(InputStream in, OutputStream out, byte[] buf) throws IOException {
-        int n;
-        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-    }
-
     /** Whole-file copy used only when the hard link is not possible (different mount). */
     private static boolean copyFile(File from, File to) {
         byte[] buf = new byte[256 * 1024];
         try (InputStream in = new FileInputStream(from);
              OutputStream out = new FileOutputStream(to)) {
-            copy(in, out, buf);
+            Io.copy(in, out, buf);
         } catch (Exception e) {
             Diag.log("copyFile " + from.getName() + " failed: " + e);
             return false;

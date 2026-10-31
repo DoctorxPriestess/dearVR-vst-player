@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 export MSYS_NO_PATHCONV=1
-A="adb -s 192.168.101.154:5555"
+A="adb -s 192.0.2.10:5555"
 D="/sdcard/我的文件"
 E1=6332550932; E2=2285141010; E3=1471137234
 for i in $(seq 1 36); do

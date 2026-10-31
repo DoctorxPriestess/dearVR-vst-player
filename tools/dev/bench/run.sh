@@ -3,7 +3,7 @@
 export MSYS_NO_PATHCONV=1
 ADB=C:/adb/platform-tools/adb.exe
 S=-s
-DEV=192.168.101.154:5555
+DEV=192.0.2.10:5555
 SEG=$1; ENG=$2; LIMIT=${3:-600}; LABEL=$4
 ROOT="D:/AI Misc/vst3_player"
 CONF="$ROOT/tools/dev/bench/bootrun.conf"

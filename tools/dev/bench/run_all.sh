@@ -4,7 +4,7 @@ export MSYS_NO_PATHCONV=1
 ROOT="D:/AI Misc/vst3_player"
 LOG="$ROOT/tools/dev/bench/results.log"
 ADB=C:/adb/platform-tools/adb.exe
-DEV=192.168.101.154:5555
+DEV=192.0.2.10:5555
 : > "$LOG"
 
 run_one() {

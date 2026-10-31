@@ -46,8 +46,8 @@ tools/
 The benchmarks talk to a device over wireless adb:
 
 ```bash
-adb connect 192.168.101.154:5555
-DEV=192.168.101.154:5555 tools/bench/bootbench.sh 3
+adb connect 192.0.2.10:5555
+DEV=192.0.2.10:5555 tools/bench/bootbench.sh 3
 ```
 
 `ADB` and `DEV` are honoured by every script in `bench/`.

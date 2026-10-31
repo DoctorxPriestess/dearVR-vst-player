@@ -8,7 +8,7 @@
 #   tools/build.sh clean               remove build outputs
 #
 # Environment:
-#   DEV      adb serial of the device (default: 192.168.101.154:5555)
+#   DEV      adb serial of the device (default: 192.0.2.10:5555)
 #   ADB      adb binary            (default: resolved from PATH)
 #   GRADLE   gradle launcher       (default: tools/gradle-8.14.3, then android/gradlew)
 set -euo pipefail
@@ -16,7 +16,7 @@ export MSYS_NO_PATHCONV=1
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 APK_DIR="$ROOT/android/app/build/outputs/apk"
-DEV=${DEV:-192.168.101.154:5555}
+DEV=${DEV:-192.0.2.10:5555}
 ADB=${ADB:-adb}
 
 # --- gradle launcher -------------------------------------------------------

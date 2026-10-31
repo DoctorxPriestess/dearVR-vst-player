@@ -1,8 +1,10 @@
 # VST Player
 
 An Android player that renders audio **through VST3 plugins**: a wine + box64 + proot guest runs a
-JUCE VST3 host, and the app drives that host over a line protocol. Everything you need to build,
-install and measure is in this repository.
+JUCE VST3 host, and the app drives that host over a line protocol.
+
+The self-contained APK (environment, plugin payload and all) is published under
+[Releases](../../releases). This repository carries the sources and the tooling.
 
 Two product flavors are produced from the same sources:
 
@@ -20,15 +22,25 @@ android/                  the app
     core/                 player, engine, decode, tags, ReplayGain, SAF library
     ui/                   hand-written views (no androidx, no reachability)
   app/src/main/cpp/       native ALAC/FLAC/MP4 decoder (libvstdecode.so)
-  app/src/standalone/     ~300 MB of environment assets for the standalone flavor
+  app/src/standalone/     environment assets for the standalone flavor (built locally, not committed)
 juce_renderer/            the VST3 host that runs inside wine (JUCE)
 build_payload/            staging area for the plugin payload archive
-pc_renderer/              Windows renderer + preset scripts (same host binary)
-third_party/              vendored JUCE and dr_flac (git-ignored)
+third_party/              vendored JUCE (git-ignored)
 tools/                    build, benchmark and asset tooling (see tools/README.md)
 legacy/                   the old VST3-SDK host, kept for reference only
 docs/                     architecture, benchmarks, historical reports
 ```
+
+## What is not in this repository
+
+Sources only. Everything below is deliberately absent, so a build from a clean clone produces an
+APK that starts but has no runtime and no plugin until you supply them:
+
+| Missing piece | Why | How to get it |
+| --- | --- | --- |
+| `android/app/src/standalone/assets/` (~298 MB) | rootfs, wine, box64 and the plugin payload; far too large to version, and the payload contains third-party binaries | untar an environment of your own and split it with `tools/assets/*`, or start from the released APK |
+| `third_party/JUCE` | ~130 MB vendored framework | clone JUCE and point `juce_renderer/CMakeLists.txt` at it |
+| `dearVR PRO 2.vst3` | the plugin itself | see [Credits](#credits-and-third-party-components) |
 
 ## Requirements
 
@@ -40,13 +52,16 @@ docs/                     architecture, benchmarks, historical reports
 The Gradle wrapper is checked in. `tools/build.sh` prefers a locally unpacked distribution at
 `tools/gradle-8.14.3` and falls back to `android/gradlew`.
 
+If your network needs a proxy for the dependency repositories, uncomment the `systemProp.*.proxy*`
+block in `android/gradle.properties` (or move it to `~/.gradle/gradle.properties`).
+
 ## Build and install
 
 ```bash
 tools/build.sh assemble            # debug APK (~280 MB) for the standalone flavor
 tools/build.sh install             # build + push + pm install to $DEV
 tools/build.sh check               # compile gate only (Java + native)
-DEV=192.168.101.154:5555 tools/build.sh install
+DEV=192.0.2.10:5555 tools/build.sh install   # DEV is your adb serial
 ```
 
 Wireless adb is the supported path. Installing a ~280 MB APK works reliably through
@@ -86,3 +101,23 @@ See `docs/ARCHITECTURE.md` for the detailed pipeline.
   build dependency-free.
 * Batteries: rendering in the background depends on the OEM power policy. Stock Android honours the
   foreground service + wake lock; some ROMs freeze the process anyway (see `docs/history/`).
+
+## Credits and third-party components
+
+**dearVR PRO 2** is a spatial audio plugin by [Dear Reality](https://www.dear-reality.com/), part of
+the Sennheiser Group since 2019. Dear Reality stopped developing its plugins in 2025: its license
+manager was deactivated on 2025-07-31, and Sennheiser now makes the plugins available free of charge,
+installable and usable *"without license activation or restrictions"*
+([announcement](https://help.sennheiser.com/hc/en-us/articles/28365062393874-Transition-of-Dear-Reality-Important-Information-for-Existing-Users),
+[coverage](https://rekkerd.org/dear-reality-immersive-audio-plugins-now-free-at-sennheiser/)).
+All rights remain with the plugin's rights holders. This project is an unofficial, non-commercial
+host for that plugin; it bundles the vendor's free build in the released APK only so the app works
+out of the box, and claims no rights to it. **If you are a rights holder and want anything removed,
+open an issue and it will be taken down promptly.**
+
+The JUCE-based host, the guest environment (proot, box64, wine) and the native decoders carry their
+own licenses; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+## License
+
+GPL-3.0. See [LICENSE](LICENSE). The bundled third-party binaries are **not** relicensed by this.

@@ -1,6 +1,6 @@
 #!/bin/bash
 export MSYS_NO_PATHCONV=1
-ADB=C:/adb/platform-tools/adb.exe; S=-s; DEV=192.168.101.154:5555
+ADB=C:/adb/platform-tools/adb.exe; S=-s; DEV=192.0.2.10:5555
 ROOT="D:/AI Misc/vst3_player"
 CONF="$ROOT/tools/dev/bench/bootrun.conf"
 printf "decode.selftest=0\r\nrender.autorun=1\r\nrender.segment=120\r\nrender.engines=2\r\n" > "$CONF"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 export MSYS_NO_PATHCONV=1
-ADB="adb -s 192.168.101.154:5555"
+ADB="adb -s 192.0.2.10:5555"
 
 echo "=== before ==="
 $ADB shell "run-as com.vstp sh -c 'ls -a files/tmp 2>/dev/null | tr \"\\n\" \" \"; echo; ls -l files/glibc/opt/vstenv/work/in files/glibc/opt/vstenv/work/out 2>&1 | head -12; ls -d files/glibc/opt/vstenv/work/seg 2>&1; ls files/boot.conf files/rab.sh 2>&1'"

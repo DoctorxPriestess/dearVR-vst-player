@@ -3,7 +3,7 @@
 export MSYS_NO_PATHCONV=1
 ADB=C:/adb/platform-tools/adb.exe
 S=-s
-DEV=192.168.101.154:5555
+DEV=192.0.2.10:5555
 APK="$1"
 $ADB $S $DEV shell "input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard; svc power stayon true" >/dev/null 2>&1
 $ADB $S $DEV install --no-streaming -r -d "$APK" > /tmp/inst.log 2>&1 &

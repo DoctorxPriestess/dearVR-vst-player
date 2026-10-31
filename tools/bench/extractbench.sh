@@ -7,7 +7,7 @@ set -u
 export MSYS_NO_PATHCONV=1
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 ADB=${ADB:-adb}
-DEV=${DEV:-192.168.101.154:5555}
+DEV=${DEV:-192.0.2.10:5555}
 PKG=com.vstp
 ACT=$PKG/com.vstplayer.MainActivity
 

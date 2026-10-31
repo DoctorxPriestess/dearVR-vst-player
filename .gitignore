@@ -19,6 +19,9 @@
 /android/app/src/standalone/assets/
 /_attic/
 
+# ---------- desktop wrapper (kept local, not published) ----------
+/pc_renderer/
+
 # ---------- local artifacts ----------
 *.apk
 *.hprof

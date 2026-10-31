@@ -3,15 +3,9 @@
 An Android player that renders audio **through VST3 plugins**: a wine + box64 + proot guest runs a
 JUCE VST3 host, and the app drives that host over a line protocol.
 
-Only the **`standalone`** flavor is released: that APK carries the environment and the plugin
-payload, so it works out of the box ([Releases](../../releases)). The second flavor, `termux`, ships
-no environment and is not distributed — build it yourself if you need it (see
-[Building the `termux` flavor](#building-the-termux-flavor)).
-
-| Flavor | applicationId | Environment | Published |
-| --- | --- | --- | --- |
-| `standalone` | `com.vstp` | Self-contained: the APK carries a rootfs, wine, box64 and the plugin payload as assets and unpacks them on first run. | yes, under [Releases](../../releases) |
-| `termux` | `com.vstp.tx` | Ships no environment at all: same code, its own applicationId, so it can be installed next to a standalone copy. | no — build it yourself |
+The APK is self-contained: it carries a rootfs, wine, box64 and the plugin payload as assets and
+unpacks them on first run, so a fresh install works without any extra download. Grab it from
+[Releases](../../releases); the applicationId is `com.vstp`.
 
 ## Layout
 
@@ -58,7 +52,7 @@ block in `android/gradle.properties` (or move it to `~/.gradle/gradle.properties
 ## Build and install
 
 ```bash
-tools/build.sh assemble            # debug APK (~280 MB) for the standalone flavor
+tools/build.sh assemble            # debug APK (~280 MB)
 tools/build.sh install             # build + push + pm install to $DEV
 tools/build.sh check               # compile gate only (Java + native)
 DEV=192.0.2.10:5555 tools/build.sh install   # DEV is your adb serial
@@ -67,23 +61,6 @@ DEV=192.0.2.10:5555 tools/build.sh install   # DEV is your adb serial
 Wireless adb is the supported path. Installing a ~280 MB APK works reliably through
 `adb push` + `pm install --user 0`; plain `adb install` can stall. On vivo/iQOO ROMs a
 "external source" confirmation dialog still has to be accepted on the device.
-
-### Building the `termux` flavor
-
-Both flavors come from the same sources; only the bundled assets differ (`src/standalone/assets` is
-flavor specific), so the termux APK is small and needs no payload:
-
-```bash
-tools/build.sh assemble termux        # or: cd android && ./gradlew assembleTermuxDebug
-# -> android/app/build/outputs/apk/termux/debug/app-termux-debug.apk  (~2.4 MB)
-```
-
-It has its own applicationId (`com.vstp.tx`), so it installs alongside the standalone build. Because
-it carries no environment it will not unpack one: you have to supply the guest yourself under
-`/data/data/com.vstp.tx/files/` — `bin/proot`, `glibc/bin/bash`, `glibc/bin/box64` and the
-`.ready-<VERSION>` marker that `Env.isReady()` checks (`VERSION` lives in `core/Env.java`). A
-debug build plus `adb shell run-as com.vstp.tx` is the practical way to copy a tree in; the unpacked
-`files/` directory of a standalone install is the easiest source for it.
 
 ## Verify
 

@@ -32,11 +32,6 @@ android {
             applicationId = "com.vstp"
             versionNameSuffix = "-full"
         }
-        create("termux") {
-            dimension = "env"
-            applicationId = "com.vstp.tx"
-            versionNameSuffix = "-termux"
-        }
     }
 
     buildTypes {

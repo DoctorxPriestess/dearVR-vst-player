@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Unified build entry point for the Android app.
 #
-#   tools/build.sh assemble [flavor]   build a debug APK          (default: standalone)
-#   tools/build.sh install  [flavor]   build, then push+install   (default: standalone)
+#   tools/build.sh assemble            build the debug APK
+#   tools/build.sh install             build, then push+install
 #   tools/build.sh check               host self checks + style + compile gate
 #   tools/build.sh lint                Android Lint report
 #   tools/build.sh clean               remove build outputs
@@ -16,6 +16,7 @@ export MSYS_NO_PATHCONV=1
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 APK_DIR="$ROOT/android/app/build/outputs/apk"
+APK="$APK_DIR/standalone/debug/app-standalone-debug.apk"
 DEV=${DEV:-192.0.2.10:5555}
 ADB=${ADB:-adb}
 
@@ -39,33 +40,19 @@ gradle() {
     ( cd "$ROOT/android" && "$GRADLE_CMD" --console=plain -q "$@" )
 }
 
-apk_path() {
-    local flavor
-    flavor=$(echo "${1:-standalone}" | cut -c1 | tr '[:lower:]' '[:upper:]')
-    flavor="$flavor$(echo "${1:-standalone}" | cut -c2- | tr '[:upper:]' '[:lower:]')"
-    echo "$APK_DIR/${flavor,,}/debug/app-${flavor,,}-debug.apk"
-}
-
 cmd_assemble() {
-    local flavor=${1:-standalone}
-    local cap="${flavor^}"
     local t0=$SECONDS
-    gradle "assemble${cap}Debug"
-    local apk
-    apk=$(apk_path "$flavor")
-    [ -f "$apk" ] || { echo "APK missing: $apk" >&2; return 1; }
-    printf 'apk: %s (%.1f MB, %ss)\n' "$apk" \
-        "$(stat -c %s "$apk" | awk '{print $1/1048576}')" "$((SECONDS - t0))"
+    gradle assembleStandaloneDebug
+    [ -f "$APK" ] || { echo "APK missing: $APK" >&2; return 1; }
+    printf 'apk: %s (%.1f MB, %ss)\n' "$APK" \
+        "$(stat -c %s "$APK" | awk '{print $1/1048576}')" "$((SECONDS - t0))"
 }
 
 cmd_install() {
-    local flavor=${1:-standalone}
-    cmd_assemble "$flavor"
-    local apk
-    apk=$(apk_path "$flavor")
+    cmd_assemble
     "$ADB" -s "$DEV" connect "$DEV" >/dev/null 2>&1 || true
     # push + pm install is far more reliable than "adb install" for a ~280 MB APK
-    "$ADB" -s "$DEV" push "$apk" /data/local/tmp/vstp.apk
+    "$ADB" -s "$DEV" push "$APK" /data/local/tmp/vstp.apk
     "$ADB" -s "$DEV" shell pm install -r -d /data/local/tmp/vstp.apk
     "$ADB" -s "$DEV" shell rm -f /data/local/tmp/vstp.apk
 }
@@ -90,8 +77,8 @@ cmd_clean() {
 }
 
 case "${1:-}" in
-    assemble) shift; cmd_assemble "${1:-standalone}" ;;
-    install)  shift; cmd_install  "${1:-standalone}" ;;
+    assemble) cmd_assemble ;;
+    install)  cmd_install ;;
     check)    cmd_check ;;
     lint)     cmd_lint ;;
     clean)    cmd_clean ;;

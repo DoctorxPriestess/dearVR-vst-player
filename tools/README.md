@@ -6,8 +6,8 @@ Everything here is a developer utility; none of it ships inside the APK.
 
 | Command | Purpose |
 | --- | --- |
-| `tools/build.sh assemble [flavor]` | Build a debug APK (`standalone` default, or `termux`). |
-| `tools/build.sh install [flavor]` | Build, then push + `pm install` to the device. |
+| `tools/build.sh assemble` | Build the debug APK. |
+| `tools/build.sh install` | Build, then push + `pm install` to the device. |
 | `tools/build.sh check` | Compile gate: Java sources + native library. |
 | `tools/build.sh lint` | Android Lint report (`android/app/build/reports/`). |
 | `tools/build.sh clean` | Remove build outputs. |

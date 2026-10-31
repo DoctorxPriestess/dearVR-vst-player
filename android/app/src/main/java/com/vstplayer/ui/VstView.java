@@ -22,6 +22,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.vstplayer.core.BootConf;
 import com.vstplayer.core.Decode;
 import com.vstplayer.core.Diag;
 import com.vstplayer.core.EngineService;
@@ -2054,54 +2055,12 @@ public class VstView extends LinearLayout {
 
     /** Debug-only string value from files/boot.conf, or null when absent/not debuggable. */
     private String confRaw(String key) {
-        try {
-            Context c = getContext();
-            int flags = c.getApplicationInfo().flags;
-            if ((flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0) return null;
-            File f = new File(c.getFilesDir(), "boot.conf");
-            if (!f.isFile()) return null;
-            java.io.BufferedReader r = new java.io.BufferedReader(
-                    new java.io.InputStreamReader(new java.io.FileInputStream(f), "UTF-8"));
-            try {
-                String line;
-                while ((line = r.readLine()) != null) {
-                    int eq = line.indexOf('=');
-                    if (eq <= 0) continue;
-                    if (line.substring(0, eq).trim().equals(key)) return line.substring(eq + 1).trim();
-                }
-            } finally {
-                r.close();
-            }
-        } catch (Exception ignored) {
-        }
-        return null;
+        return BootConf.raw(getContext(), key);
     }
 
     /** Debug-only knob from files/boot.conf; release builds always use the default. */
     private int confInt(String key, int def, int lo, int hi) {
-        try {
-            Context c = getContext();
-            int flags = c.getApplicationInfo().flags;
-            if ((flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0) return def;
-            File f = new File(c.getFilesDir(), "boot.conf");
-            if (!f.isFile()) return def;
-            java.io.BufferedReader r = new java.io.BufferedReader(
-                    new java.io.InputStreamReader(new java.io.FileInputStream(f), "UTF-8"));
-            try {
-                String line;
-                while ((line = r.readLine()) != null) {
-                    int eq = line.indexOf('=');
-                    if (eq <= 0) continue;
-                    if (!line.substring(0, eq).trim().equals(key)) continue;
-                    int v = Integer.parseInt(line.substring(eq + 1).trim());
-                    return Math.max(lo, Math.min(hi, v));
-                }
-            } finally {
-                r.close();
-            }
-        } catch (Exception ignored) {
-        }
-        return def;
+        return BootConf.intValue(getContext(), key, def, lo, hi);
     }
 
     /**

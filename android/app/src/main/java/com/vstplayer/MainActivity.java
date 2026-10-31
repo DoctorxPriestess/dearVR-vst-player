@@ -21,6 +21,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.vstplayer.core.App;
+import com.vstplayer.core.BootConf;
 import com.vstplayer.core.Diag;
 import com.vstplayer.core.Export;
 import com.vstplayer.core.LibraryRef;
@@ -172,6 +173,11 @@ public class MainActivity extends Activity implements LibraryView.Host {
         });
 
         show(0);
+        // A scripted run (files/boot.conf ui.tab=N) opens the page the hooks live on: the render
+        // page is built lazily, so without this the autorun hook is unreachable from a launch
+        // intent alone.
+        int bootTab = BootConf.intValue(this, "ui.tab", 0, 0, 2);
+        if (bootTab != 0) show(bootTab);
     }
 
     @Override

@@ -19,6 +19,15 @@ x86_64 APK for an emulator, so the delivery encoders (`core/Encode`, the FLAC en
 into the app's `files/` directory and the next start encodes everything in `files/selftest` once and
 writes `files/encode-selftest.txt` (see `core/EncodeSmoke`).
 
+Scripted batches in a debug build are driven by `files/boot.conf`, one `KEY=VALUE` per line
+(`core/BootConf` refuses the file in a release build):
+
+| Key | Effect |
+| --- | --- |
+| `ui.tab=N` | Opens tab 0 (home), 1 (library) or 2 (render) right after start; the render page is built lazily, so a headless run needs this. |
+| `render.autorun=1` | Queues every source in the guest `work/in` directory and starts the batch once the engine reports ready. |
+| `decode.selftest=1` / `decode.one=NAME` | Decode the codec fixtures, or one named file, and log the result. |
+
 ## Layout
 
 ```

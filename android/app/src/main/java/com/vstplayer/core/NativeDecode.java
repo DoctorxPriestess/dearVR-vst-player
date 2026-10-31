@@ -77,6 +77,28 @@ public final class NativeDecode {
     public static native int decodeToWav(String inPath, String outPath, int maxSeconds);
 
     /**
+     * Encodes a PCM WAV (16 or 24 bit) into FLAC through the vendored libFLAC.
+     *
+     * @param level libFLAC compression level, 0..8
+     * @return 0 on success, or a negative {@code ND_ENC_*} code
+     */
+    public static int encodeFlac(File wav, File flac, int level) {
+        if (wav == null || flac == null || !LOADED) {
+            return -1;
+        }
+        try {
+            return encodeFlac(wav.getAbsolutePath(), flac.getAbsolutePath(), level);
+        } catch (Throwable t) {
+            // UnsatisfiedLinkError on an older library: report a failure, the caller
+            // keeps the WAV it already has.
+            return -1;
+        }
+    }
+
+    /** Native entry point: Java_com_vstplayer_core_NativeDecode_encodeFlac. */
+    public static native int encodeFlac(String wavPath, String flacPath, int level);
+
+    /**
      * Error text for the most recent decode call, or the library load error
      * when the native library is unavailable. May return {@code null} before
      * the first call.

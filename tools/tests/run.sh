@@ -18,7 +18,7 @@ rm -rf "$OUT"
 mkdir -p "$OUT"
 
 # Keep this list to classes whose imports are java.* only.
-CLASSES=(Io Paths Segment Param Loudness)
+CLASSES=(Io Paths Segment Param Loudness Wav)
 
 SOURCES=()
 for c in "${CLASSES[@]}"; do SOURCES+=("$SRC/$c.java"); done

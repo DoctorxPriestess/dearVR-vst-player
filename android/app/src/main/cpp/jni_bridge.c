@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "nd_decode.h"
+#include "nd_flac_end.h"
 
 #define ND_JNI_ERR_MAX 1024
 
@@ -109,4 +110,57 @@ Java_com_vstplayer_core_NativeDecode_getLastError0(JNIEnv *env, jclass cls)
     ret = (*env)->NewStringUTF(env, nd_jni_last_error);
     ND_JNI_UNLOCK();
     return ret;
+}
+
+/* WAV -> FLAC for the export step. Same error buffer as the decoder, so
+ * NativeDecode.lastError() reports whichever path failed last. */
+static jint nd_jni_encode_flac(JNIEnv *env, jclass cls, jstring in, jstring out, jint level)
+{
+    const char *cin = NULL;
+    const char *cout = NULL;
+    char        err[ND_JNI_ERR_MAX];
+    int         rc;
+
+    (void)cls;
+    memset(err, 0, sizeof(err));
+
+    if (!in || !out) {
+        nd_jni_store_error("missing input or output path");
+        return (jint)ND_ENC_ERR_OPEN;
+    }
+    cin = (*env)->GetStringUTFChars(env, in, NULL);
+    if (!cin) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        nd_jni_store_error("out of memory converting input path");
+        return (jint)ND_ENC_ERR_OPEN;
+    }
+    cout = (*env)->GetStringUTFChars(env, out, NULL);
+    if (!cout) {
+        (*env)->ReleaseStringUTFChars(env, in, cin);
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        nd_jni_store_error("out of memory converting output path");
+        return (jint)ND_ENC_ERR_OPEN;
+    }
+
+    rc = nd_encode_flac(cin, cout, (int)level, err, (int)sizeof(err));
+
+    (*env)->ReleaseStringUTFChars(env, out, cout);
+    (*env)->ReleaseStringUTFChars(env, in, cin);
+
+    nd_jni_store_error(err);
+    return (jint)rc;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vstplayer_core_NativeDecode_encodeFlac(JNIEnv *env, jclass cls,
+                                                jstring in, jstring out, jint level)
+{
+    return nd_jni_encode_flac(env, cls, in, out, level);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vstplayer_core_NativeDecode_encodeFlac__Ljava_lang_String_2Ljava_lang_String_2I(
+    JNIEnv *env, jclass cls, jstring in, jstring out, jint level)
+{
+    return nd_jni_encode_flac(env, cls, in, out, level);
 }

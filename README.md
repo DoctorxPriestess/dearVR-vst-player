@@ -97,8 +97,16 @@ The Android frontend controls the background Windows host via textual line comma
   Files longer than 10 minutes are sliced into 300-second chunks with a 10-second pre-roll. The pre-roll pre-warms plugin internal state (reverbs, delays), and is stripped at concatenation time (`Segment.join`), yielding seamless, sample-exact output without boundary clicks.
 * **Multi-Lane Core Pinning (`Vst.java`)**:
   Devices with $\ge$ 6 GB total and $\ge$ 2.6 GB available RAM spawn up to 3 parallel engine instances. Each instance is pinned to distinct performance cores using `taskset` (derived from `cpuinfo_max_freq`), synchronizing parameters across lanes.
+* **Delivery Format (`Encode.java`)**:
+  The host always writes PCM, so an untouched playlist used to leave dozens of gigabytes of WAV
+  behind. Before a render is exported it is compressed to match the source: a lossless source
+  (wav / flac / alac / alac-in-m4a / aiff) becomes **FLAC** through the vendored libFLAC encoder
+  (bit exact, typically 40-60 % of the WAV), a lossy source (mp3 / aac / ogg / opus) becomes
+  **AAC** at the *source* bitrate through the platform encoder plus `MediaMuxer`, and anything
+  unknown - including 32 bit PCM, which the platform FLAC decoder cannot read back - stays
+  **WAV**. A failed encode always falls back to the WAV it was given: it may cost space, never audio.
 * **Safe Exporting (`Export.java`)**:
-  Finished 24-bit/32-bit float renders are written asynchronously to the user's chosen folder using Android's Storage Access Framework (SAF).
+  Finished renders are written asynchronously to the user's chosen folder through the Storage Access Framework (SAF), with the MIME type matching the delivered container.
 
 ---
 
@@ -131,6 +139,12 @@ This repository contains **source code only**. The following large binary compon
 | `android/app/src/standalone/assets/` | ~298 MB | Prebuilt rootfs, Wine, Box64, and payload | Extract from the [Release APK](../../releases) or build via `tools/assets/*` |
 | `third_party/JUCE` | ~130 MB | Large upstream framework | Clone JUCE and link `juce_renderer/CMakeLists.txt` |
 | `dearVR PRO 2.vst3` | ~40 MB | Proprietary plugin binary | Bundled in official Release APKs (see Credits) |
+
+The FLAC encoder is the exception: libFLAC (BSD-3-Clause) is vendored under
+`android/app/src/main/cpp/third_party/flac` so a clean clone can build the encoder without any
+download. Only the encoder side plus the small decoder the encoder's verify mode links against is
+compiled; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for the license text and the one
+local patch applied to it.
 
 ---
 

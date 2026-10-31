@@ -65,8 +65,11 @@ public final class Export {
     public static Uri copy(Context c, File src, String displayName, String folder) throws IOException {
         Uri tree = tree(c);
         if (tree == null) return null;
-        String mime = displayName.toLowerCase(java.util.Locale.US).endsWith(".flac")
-                ? "audio/flac" : "audio/wav";
+        // The render is delivered as WAV (unknown source), FLAC (lossless source) or M4A
+        // (lossy source); the media store needs the right type or the file cannot be played.
+        String lower = displayName.toLowerCase(java.util.Locale.US);
+        String mime = lower.endsWith(".flac") ? "audio/flac"
+                : (lower.endsWith(".m4a") || lower.endsWith(".aac") ? "audio/mp4" : "audio/wav");
         return copyToTree(c, tree, src, displayName, mime, folder);
     }
 

@@ -3,6 +3,7 @@ package com.vstplayer.tests;
 import com.vstplayer.core.Io;
 import com.vstplayer.core.Paths;
 import com.vstplayer.core.Segment;
+import com.vstplayer.core.Wav;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -35,6 +36,7 @@ public final class SelfCheck {
         sanitizeDropsIllegalCharacters();
         segmentProbeAndJoinKeepFrameCount();
         flacDepthOf24BitIsReported();
+        wavProbeReadsPlainAndExtensibleHeaders();
 
         System.out.println();
         System.out.println(passed + " passed, " + failed + " failed");
@@ -185,6 +187,89 @@ public final class SelfCheck {
     private static void write(File f) throws IOException {
         try (FileOutputStream out = new FileOutputStream(f)) {
             out.write(new byte[] { 1, 2, 3 });
+        }
+    }
+
+    /**
+     * Wav.probe has to describe the file the encoders will read: a wrong data offset would
+     * compress the header, a wrong depth would truncate 24 bit audio, and a float WAV has
+     * no integer samples to hand to either encoder.
+     */
+    private static void wavProbeReadsPlainAndExtensibleHeaders() throws Exception {
+        File dir = Files.createTempDirectory("wavprobe").toFile();
+        try {
+            File plain = new File(dir, "plain16.wav");
+            writeWav(plain, 1000, 2, 2);
+            Wav.Info a = Wav.probe(plain);
+            check("wav plain: parsed", a != null);
+            if (a != null) {
+                check("wav plain: channels", a.channels == 2);
+                check("wav plain: rate", a.rate == 48000);
+                check("wav plain: bits", a.bits == 16);
+                check("wav plain: frames", a.frames == 1000);
+                check("wav plain: data offset", a.dataOffset == 44);
+            }
+
+            // 24 bit, WAVE_FORMAT_EXTENSIBLE, preceded by an odd sized chunk that must be
+            // skipped with its pad byte.
+            File ext = new File(dir, "ext24.wav");
+            int frames = 512;
+            int dataLen = frames * 2 * 3;
+            java.io.ByteArrayOutputStream b = new java.io.ByteArrayOutputStream();
+            b.write("RIFF".getBytes("US-ASCII"));
+            b.write(intLE(4 + (8 + 3 + 1) + (8 + 40) + (8 + dataLen)));
+            b.write("WAVE".getBytes("US-ASCII"));
+            b.write("JUNK".getBytes("US-ASCII"));
+            b.write(intLE(3));
+            b.write(new byte[] { 1, 2, 3, 0 });          // 3 bytes + pad
+            b.write("fmt ".getBytes("US-ASCII"));
+            b.write(intLE(40));
+            b.write(shortLE((short) 0xFFFE));
+            b.write(shortLE((short) 2));
+            b.write(intLE(48000));
+            b.write(intLE(48000 * 6));
+            b.write(shortLE((short) 6));
+            b.write(shortLE((short) 24));
+            b.write(shortLE((short) 22));
+            b.write(shortLE((short) 24));
+            b.write(intLE(3));                            // channel mask
+            b.write(shortLE((short) 1));                  // sub format: PCM
+            b.write(new byte[14]);
+            b.write("data".getBytes("US-ASCII"));
+            b.write(intLE(dataLen));
+            b.write(new byte[dataLen]);
+            try (FileOutputStream out = new FileOutputStream(ext)) {
+                out.write(b.toByteArray());
+            }
+            Wav.Info c = Wav.probe(ext);
+            check("wav extensible: parsed", c != null);
+            if (c != null) {
+                check("wav extensible: 24 bit", c.bits == 24);
+                check("wav extensible: frames", c.frames == frames);
+                check("wav extensible: channels", c.channels == 2);
+            }
+
+            // Unknown data size (streamed writer): the file length decides.
+            File streamed = new File(dir, "streamed.wav");
+            byte[] raw = Files.readAllBytes(plain.toPath());
+            raw[40] = 0; raw[41] = 0; raw[42] = 0; raw[43] = 0;
+            try (FileOutputStream out = new FileOutputStream(streamed)) {
+                out.write(raw);
+            }
+            Wav.Info d = Wav.probe(streamed);
+            check("wav streamed: parsed", d != null);
+            if (d != null) check("wav streamed: frames from length", d.frames == 1000);
+
+            // Float WAV: no integer samples for either encoder.
+            File flt = new File(dir, "float.wav");
+            byte[] fraw = Files.readAllBytes(plain.toPath());
+            fraw[20] = 3; fraw[21] = 0;                   // format tag 3 (IEEE float)
+            try (FileOutputStream out = new FileOutputStream(flt)) {
+                out.write(fraw);
+            }
+            check("wav float: rejected", Wav.probe(flt) == null);
+        } finally {
+            deleteTree(dir);
         }
     }
 

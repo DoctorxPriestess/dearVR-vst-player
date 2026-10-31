@@ -9,6 +9,7 @@ environment and the plugin payload described in the table.
 | Component | Where | License | Upstream |
 | --- | --- | --- | --- |
 | JUCE (VST3 host framework) | `juce_renderer/` (fetched by CMake, not vendored here) | GPL-3.0 or commercial | https://github.com/juce-framework/JUCE |
+| libFLAC (encoder) | `android/app/src/main/cpp/third_party/flac/` | BSD-3-Clause | https://gitlab.xiph.org/xiph/flac |
 | dr_flac | `android/app/src/main/cpp/third_party/dr_flac.h` | public domain / MIT-0 | https://github.com/mackron/dr_flac |
 | proot (launcher binary) | `android/app/src/main/assets/proot` | GPL-2.0 | https://github.com/termux/proot |
 | patchelf (binary) | `android/app/src/main/assets/patchelf` | GPL-3.0 | https://github.com/NixOS/patchelf |
@@ -18,6 +19,33 @@ environment and the plugin payload described in the table.
 `proot`, `patchelf` and `libandroid-shmem.so` are redistributed as unmodified binaries so that the
 APK can start its guest. Their sources are available at the upstream addresses above; if you need a
 copy from this project, open an issue and one will be provided.
+
+### libFLAC
+
+The encoder vendored under `cpp/third_party/flac` is the copy that ships with JUCE (libFLAC 1.4.x),
+with two local changes that are marked in the sources:
+
+* `libFLAC/lpc_flac.c` includes `private/macros.h` explicitly, because this copy relied on another
+  header to provide `flac_min()` and MSVC then saw an implicit function declaration;
+* the build compiles it with `NDEBUG` and `HAVE_LROUND=1` (see `cpp/CMakeLists.txt`), which the
+  upstream `configure` script would normally put into `config.h`.
+
+The BSD-3-Clause text is reproduced at the top of every vendored file.
+
+## Tests for the encoder
+
+`android/app/src/main/cpp/pc/` builds `flacenctest` for the workstation. It encodes a WAV with the
+same sources the APK uses, which is how the 16 and 24 bit paths are checked against ffmpeg without a
+device:
+
+```bash
+cmake -S android/app/src/main/cpp/pc -B build/pc -G Ninja
+cmake --build build/pc --target flacenctest
+build/pc/flacenctest in.wav out.flac 5
+ffmpeg -i in.wav  -f s24le a.raw
+ffmpeg -i out.flac -f s24le b.raw
+cmp a.raw b.raw          # must be identical: FLAC is lossless
+```
 
 ## Components bundled in the released APK
 

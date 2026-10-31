@@ -1906,7 +1906,7 @@ public class VstView extends LinearLayout {
             } else if (fj.direct()) {
                 markFileDone(fj.id);
                 cleanupRef(fj.src);
-                if (ok) exportThenNext(promote(fj));
+                if (ok) finishFile(fj, promote(fj));
                 else failedFiles++;   // a whole file that never rendered is a lost file
             } else if (fj.done >= fj.outs.length) {
                 stitch(fj);
@@ -1968,7 +1968,7 @@ public class VstView extends LinearLayout {
                     v.setStatusProgress("拼接失败：" + bad);
                     Toast.makeText(v.getContext(), "拼接失败：" + bad, Toast.LENGTH_LONG).show();
                 } else {
-                    v.exportThenNext(fj.finalOut);
+                    v.finishFile(fj, fj.finalOut);
                 }
                 v.checkBatchDone();
             });
@@ -2102,6 +2102,45 @@ public class VstView extends LinearLayout {
         } catch (Exception ignored) {
         }
         return def;
+    }
+
+    /**
+     * Compresses the finished render, then exports it.
+     *
+     * <p>Both steps run on the export thread: a twelve minute file is ~120 MB of PCM and
+     * neither the FLAC encoder nor the AAC muxer belongs on the main thread. The source
+     * file decides the target - lossless in, FLAC out; lossy in, AAC at the same bitrate;
+     * anything else keeps its WAV (see {@link com.vstplayer.core.Encode}). The original
+     * WAV is deleted only after the compressed copy proved usable, so a failed encode
+     * costs disk space, never audio.
+     */
+    private void finishFile(final FileJob fj, final File wav) {
+        final Context ctx = getContext().getApplicationContext();
+        final java.lang.ref.WeakReference<VstView> self = new java.lang.ref.WeakReference<>(this);
+        setStatusProgress("压缩 · " + wav.getName());
+        EXPORT.execute(() -> {
+            File out = wav;
+            try {
+                out = com.vstplayer.core.Encode.compress(ctx, fj == null ? null : fj.src, wav);
+            } catch (Throwable t) {
+                Diag.log("compress threw for " + wav.getName() + ": " + t);
+            }
+            File res = (out == null) ? wav : out;
+            if (!res.equals(wav)) {
+                if (!res.isFile() || res.length() <= 0) {
+                    Diag.log("compressed copy unusable, keeping " + wav.getName());
+                    res = wav;
+                } else if (wav.delete()) {
+                    Diag.log("compressed and removed " + wav.getName());
+                }
+            }
+            final File done = res;
+            ui.post(() -> {
+                VstView v = self.get();
+                if (v == null || v.stopping) return;
+                v.exportThenNext(done);
+            });
+        });
     }
 
     /** Copies the finished render into the picked SAF folder without blocking the UI thread. */

@@ -457,7 +457,8 @@ int main (int argc, char** argv)
 
                 if (cmd == "PARAMS")
                 {
-                    if (parts.size() < 2 || parts[1].isEmpty()) { protocolLine ("ERR usage PARAMS|<jsonPath>"); continue; }
+                    if (parts.size() < 2 || parts[1].isEmpty())
+                    { protocolLine ("ERR usage PARAMS|<jsonPath>"); continue; }
                     const juce::File json (parts[1]);
                     json.getParentDirectory().createDirectory();
                     if (! json.replaceWithText (buildParamsJson (*inst), false, false))
@@ -471,7 +472,8 @@ int main (int argc, char** argv)
 
                 if (cmd == "GET")
                 {
-                    if (parts.size() < 2 || parts[1].isEmpty()) { protocolLine ("ERR usage GET|<idOrIndex>"); continue; }
+                    if (parts.size() < 2 || parts[1].isEmpty())
+                    { protocolLine ("ERR usage GET|<idOrIndex>"); continue; }
                     auto* p = findParameter (*inst, parts[1]);
                     if (p == nullptr) { protocolLine ("ERR no param " + parts[1]); continue; }
                     protocolLine ("OK " + String ((double) jlimit (0.0f, 1.0f, p->getValue()), 6)
@@ -481,7 +483,8 @@ int main (int argc, char** argv)
 
                 if (cmd == "SET")
                 {
-                    if (parts.size() < 3 || parts[1].isEmpty()) { protocolLine ("ERR usage SET|<idOrIndex>|<0..1>"); continue; }
+                    if (parts.size() < 3 || parts[1].isEmpty())
+                    { protocolLine ("ERR usage SET|<idOrIndex>|<0..1>"); continue; }
                     auto* p = findParameter (*inst, parts[1]);
                     if (p == nullptr) { protocolLine ("ERR no param " + parts[1]); continue; }
                     const String valStr = parts[2];
@@ -494,7 +497,8 @@ int main (int argc, char** argv)
 
                 if (cmd == "PRESET")
                 {
-                    if (parts.size() < 2 || parts[1].isEmpty()) { protocolLine ("ERR usage PRESET|<vstpresetPath>"); continue; }
+                    if (parts.size() < 2 || parts[1].isEmpty())
+                    { protocolLine ("ERR usage PRESET|<vstpresetPath>"); continue; }
                     PresetChunks np;
                     String presetErr;
                     if (! readPreset (parts[1], np, presetErr))
@@ -507,7 +511,8 @@ int main (int argc, char** argv)
 
                 if (cmd == "SAVE")
                 {
-                    if (parts.size() < 2 || parts[1].isEmpty()) { protocolLine ("ERR usage SAVE|<vstpresetPath>"); continue; }
+                    if (parts.size() < 2 || parts[1].isEmpty())
+                    { protocolLine ("ERR usage SAVE|<vstpresetPath>"); continue; }
                     String saveError;
                     if (writeVstPreset (*inst, parts[1], presetPath, saveError))
                         protocolLine ("OK " + parts[1]);
@@ -547,7 +552,8 @@ int main (int argc, char** argv)
                 {
                     PresetChunks np;
                     String presetErr;
-                    if (readPreset (pr, np, presetErr)) { applyPreset (*inst, np); std::cerr << "preset: " << pr << "\n"; }
+                    if (readPreset (pr, np, presetErr))
+                    { applyPreset (*inst, np); std::cerr << "preset: " << pr << "\n"; }
                     else { protocolLine ("ERR preset " + pr + ": " + presetErr); continue; }
                 }
                 double sr = curSr;

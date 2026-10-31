@@ -293,7 +293,8 @@ public final class ReplayGain {
                 if (writeTags) {
                     Map<String, String> out = new java.util.LinkedHashMap<>();
                     out.put(RgTags.TRACK_GAIN, String.format(java.util.Locale.US, "%+.2f dB", (double) gain));
-                    out.put(RgTags.TRACK_PEAK, String.format(java.util.Locale.US, "%.6f", Math.pow(10.0, res.peakDbfs / 20.0)));
+                    out.put(RgTags.TRACK_PEAK, String.format(java.util.Locale.US, "%.6f",
+                            Math.pow(10.0, res.peakDbfs / 20.0)));
                     try {
                         writeContainer(f, out);
                     } catch (Exception e) {

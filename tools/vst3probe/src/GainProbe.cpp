@@ -67,7 +67,8 @@ public:
 private:
     static juce::String ptrHex (const void* p)
     {
-        return "0x" + juce::String::toHexString (static_cast<juce::int64> (reinterpret_cast<juce::pointer_sized_int> (p)));
+        return "0x" + juce::String::toHexString (
+                static_cast<juce::int64> (reinterpret_cast<juce::pointer_sized_int> (p)));
     }
 
     static void log (const juce::String& s)

@@ -16,9 +16,10 @@ import re
 import sys
 
 MAX_LINE = 120
-# Line length is enforced for the compiled sources only; scripts and docs have
-# legitimately long pipelines and command invocations.
-MAX_LINE_SUFFIXES = {".java", ".c", ".h", ".cpp", ".hpp", ".kts", ".xml"}
+# Line length is enforced for the compiled sources only. Scripts and docs have
+# legitimately long pipelines, and res/drawable/*.xml is vector path data where a
+# single long line is the readable form.
+MAX_LINE_SUFFIXES = {".java", ".c", ".h", ".cpp", ".hpp", ".kts"}
 # Generated, vendored or binary-heavy trees are out of scope.
 SKIP_DIRS = {
     ".git", "_attic", "_notes", "build", "third_party", "test", "dist",

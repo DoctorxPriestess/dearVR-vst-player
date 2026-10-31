@@ -319,11 +319,11 @@ public final class Tags {
                 byte[] b = new byte[Math.min(size, 8 << 20)];
                 s.readFully(b);
                 if (b.length > 32) {
-                    int mime = ((b[4] & 0xFF) << 24) | ((b[5] & 0xFF) << 16) | ((b[6] & 0xFF) << 8) | (b[7] & 0xFF);
+                    int mime = be32(b, 4);
                     int at = 8 + mime;
-                    int desc = ((b[at] & 0xFF) << 24) | ((b[at + 1] & 0xFF) << 16) | ((b[at + 2] & 0xFF) << 8) | (b[at + 3] & 0xFF);
+                    int desc = be32(b, at);
                     at += 4 + desc + 16;
-                    int dataLen = ((b[at] & 0xFF) << 24) | ((b[at + 1] & 0xFF) << 16) | ((b[at + 2] & 0xFF) << 8) | (b[at + 3] & 0xFF);
+                    int dataLen = be32(b, at);
                     at += 4;
                     if (dataLen > 0 && at + dataLen <= b.length) {
                         info.cover = new byte[dataLen];
@@ -361,16 +361,14 @@ public final class Tags {
         if (len < 10) return;
         if (b[off] != 'I' || b[off + 1] != 'D' || b[off + 2] != '3') return;
         int ver = b[off + 3];
-        int size = ((b[off + 6] & 0x7F) << 21) | ((b[off + 7] & 0x7F) << 14) | ((b[off + 8] & 0x7F) << 7) | (b[off + 9] & 0x7F);
+        int size = synchsafe32(b, off + 6);
         int end = Math.min(len, off + 10 + size);
         int p = off + 10;
         if ((b[off + 5] & 0x40) != 0) p += 4; // extended header
         while (p + 10 <= end) {
             String id = new String(b, p, 4, LATIN);
             if (id.charAt(0) == 0) break;
-            int fsize = ver >= 4
-                    ? ((b[p + 4] & 0x7F) << 21) | ((b[p + 5] & 0x7F) << 14) | ((b[p + 6] & 0x7F) << 7) | (b[p + 7] & 0x7F)
-                    : ((b[p + 4] & 0xFF) << 24) | ((b[p + 5] & 0xFF) << 16) | ((b[p + 6] & 0xFF) << 8) | (b[p + 7] & 0xFF);
+            int fsize = ver >= 4 ? synchsafe32(b, p + 4) : be32(b, p + 4);
             int d = p + 10;
             if (fsize <= 0 || d + fsize > end) break;
             try {
@@ -413,8 +411,23 @@ public final class Tags {
         return null;
     }
 
+    /** Big-endian 32-bit word, used by the MP4 and ID3 frame headers. */
+    private static int be32(byte[] b, int o) {
+        return ((b[o] & 0xFF) << 24) | ((b[o + 1] & 0xFF) << 16)
+                | ((b[o + 2] & 0xFF) << 8) | (b[o + 3] & 0xFF);
+    }
+
+    /** ID3 size field: 7 significant bits per byte. */
+    private static int synchsafe32(byte[] b, int o) {
+        return ((b[o] & 0x7F) << 21) | ((b[o + 1] & 0x7F) << 14)
+                | ((b[o + 2] & 0x7F) << 7) | (b[o + 3] & 0x7F);
+    }
+
     private static long u32(byte[] b, int o) {
-        return ((long) (b[o] & 0xFF)) | ((long) (b[o + 1] & 0xFF) << 8) | ((long) (b[o + 2] & 0xFF) << 16) | ((long) (b[o + 3] & 0xFF) << 24);
+        return ((long) (b[o] & 0xFF))
+                | ((long) (b[o + 1] & 0xFF) << 8)
+                | ((long) (b[o + 2] & 0xFF) << 16)
+                | ((long) (b[o + 3] & 0xFF) << 24);
     }
 
     private static int u16(byte[] b, int o) {

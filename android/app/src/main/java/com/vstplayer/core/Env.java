@@ -322,7 +322,8 @@ public class Env {
         sb.append("export WINEPREFIX=/opt/vstenv/wineprefix\n");
         sb.append("export WINEDEBUG=-all\n");
         sb.append("export WINEDLLOVERRIDES='mscoree,mshtml='\n");
-        sb.append("export LD_LIBRARY_PATH=/lib:/usr/lib:/wine-9.3-vanilla-wow64/lib/wine/x86_64-unix:/wine-9.3-vanilla-wow64/lib\n");
+        sb.append("export LD_LIBRARY_PATH=/lib:/usr/lib"
+                + ":/wine-9.3-vanilla-wow64/lib/wine/x86_64-unix:/wine-9.3-vanilla-wow64/lib\n");
         sb.append("export BOX64_DYNAREC_BIGBLOCK=3\n");
         sb.append("export BOX64_DYNAREC_SAFEFLAGS=0\n");
         sb.append("export BOX64_DYNAREC_CALLRET=1\n");

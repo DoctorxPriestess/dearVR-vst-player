@@ -212,6 +212,16 @@ public class PlaylistPage extends LinearLayout {
         Toast.makeText(getContext(), "已加入 " + n + " 首", Toast.LENGTH_SHORT).show();
     }
 
+    /**
+     * Moves the "now playing" highlight, without resolving anything.
+     *
+     * <p>Tapping a row starts playback and leaves this page open, so without this the red row
+     * stayed on the previous track until the page was rebuilt.
+     */
+    public void onTrack(File f) {
+        list.setCurrent(f);
+    }
+
     public void refresh() {
         current = resolve();
         List<File> files = new ArrayList<>();

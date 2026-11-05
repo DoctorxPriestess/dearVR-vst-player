@@ -141,6 +141,7 @@ public class MainActivity extends Activity implements LibraryView.Host {
             @Override public void onTrack(File f, int index, int total) {
                 if (home != null) home.onTrack(f, index, total);
                 if (detail != null && detailOpen) detail.onTrack(f, index, total);
+                if (playlistPage != null) playlistPage.onTrack(f);
             }
             @Override public void onState(boolean playing) {
                 if (home != null) home.onState(playing);

@@ -257,6 +257,11 @@ public class TrackList extends ScrollView {
     // ------------------------------------------------------------------ touch
 
     @Override public boolean onInterceptTouchEvent(MotionEvent ev) {
+        // ScrollView has to see the event first: it decides whether a vertical drag becomes a
+        // scroll. Returning only our own flag meant a gesture that started on a row (rows are
+        // clickable, so they consume the DOWN) never reached the scroll machinery at all, and a
+        // list taller than the screen could not be scrolled.
+        boolean scrolling = super.onInterceptTouchEvent(ev);
         switch (ev.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 downX = ev.getX();
@@ -271,6 +276,7 @@ public class TrackList extends ScrollView {
                 break;
             case MotionEvent.ACTION_MOVE:
                 float dx = ev.getX() - downX, dy = ev.getY() - downY;
+                if (scrolling) h.removeCallbacks(longPress);   // a scroll is not a reorder press
                 if (dragging) return true;
                 if (Math.abs(dx) > Ui.dp(getContext(), 24) && Math.abs(dx) > Math.abs(dy) * 1.4f) {
                     if (dx < 0 && touchRow != null) {
@@ -286,7 +292,7 @@ public class TrackList extends ScrollView {
                 h.removeCallbacks(longPress);
                 break;
         }
-        return dragging;
+        return scrolling || dragging;
     }
 
     @Override public boolean onTouchEvent(MotionEvent ev) {

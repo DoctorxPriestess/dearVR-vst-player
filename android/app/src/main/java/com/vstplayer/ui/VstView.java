@@ -29,6 +29,7 @@ import com.vstplayer.core.EngineService;
 import com.vstplayer.core.Export;
 import com.vstplayer.core.LibraryRef;
 import com.vstplayer.core.Param;
+import com.vstplayer.core.ParamProbe;
 import com.vstplayer.core.Io;
 import com.vstplayer.core.Player;
 import com.vstplayer.core.Segment;
@@ -404,14 +405,122 @@ public class VstView extends LinearLayout {
         return true;
     }
 
-    /** Refreshes the value label of every bound row without touching the adapter. */
+    /** Refreshes the value of every bound row without touching the adapter. */
     private void refreshValues() {
         for (int i = 0; i < paramList.getChildCount(); i++) {
             Object tag = paramList.getChildAt(i).getTag();
             if (!(tag instanceof Row)) continue;
             Row row = (Row) tag;
-            if (row.p != null && !row.p.id.equals(draggingParamId)) row.val.setText(row.p.valueText());
+            if (row.p != null) bindRow(row);
         }
+    }
+
+    /**
+     * Writes the parameter's own value text (and the control state) into a row.
+     *
+     * <p>The label never shows a percentage of the normalised range: the plugin's text is the only
+     * description of the value the user can act on ("-3.5 dB", "MediumRecordingHall", "ON"), and it
+     * arrives on the ack of every SET.
+     */
+    private void bindRow(Row row) {
+        Param p = row.p;
+        if (p == null) return;
+        row.binding = true;
+        try {
+            row.val.setText(p.valueText());
+            boolean on = p.norm >= 0.5f;
+            if (row.toggle.isChecked() != on) row.toggle.setChecked(on);
+            if (row.kind == KIND_CHOICE) {
+                String cur = p.valueText();
+                if (!cur.contentEquals(row.choice.getText())) row.choice.setText(cur);
+            }
+        } finally {
+            row.binding = false;
+        }
+    }
+
+    // ----------------------------------------------------------- parameter editors
+
+    /** Numeric entry in the plugin's own unit, e.g. "-3.5 dB" for a gain. */
+    private void askNumber(final Param p) {
+        if (p == null || p.isSwitch()) return;   // an on/off row toggles, it has no number to type
+        if (!vst.paramsIdle()) { toast("渲染中不能修改参数"); return; }
+        Context c = getContext();
+        if (c == null) return;
+        final EditText input = new EditText(c);
+        input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
+                | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+                | android.text.InputType.TYPE_NUMBER_FLAG_SIGNED);
+        input.setText(trimNumber(p.numericValue()));
+        // Typing replaces the current value, the way a numeric field in a plugin GUI behaves.
+        input.setSelectAllOnFocus(true);
+        input.requestFocus();
+        String unit = p.unit();
+        new AlertDialog.Builder(c)
+                .setTitle(p.name + (unit.isEmpty() ? "" : "（" + unit + "）"))
+                .setMessage("当前值：" + p.valueText())
+                .setView(input)
+                .setPositiveButton("确定", (d, w) -> applyNumber(p, input.getText().toString()))
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void applyNumber(final Param p, String text) {
+        Double target = Param.number(text);
+        if (target == null) { toast("请输入数字"); return; }
+        final double want = target;
+        toast("换算中…");
+        ParamProbe.normForText(vst, p, want, norm -> {
+            if (getContext() == null) return;
+            ui.post(() -> {
+                if (norm == null) { toast("无法换算（渲染中或引擎未就绪）"); return; }
+                vst.setParam(p.id, norm);
+            });
+        });
+    }
+
+    /** Option list for a discrete parameter, named by the plugin itself. */
+    private void askChoice(final Param p) {
+        if (p == null) return;
+        if (!vst.paramsIdle()) { toast("渲染中不能修改参数"); return; }
+        String[] cached = ParamProbe.cachedSteps(p);
+        if (cached != null) { showChoices(p, cached); return; }
+        Context c = getContext();
+        if (c == null) return;
+        final AlertDialog busy = new AlertDialog.Builder(c)
+                .setTitle(p.name).setMessage("正在读取可选值…").setCancelable(false).create();
+        busy.show();
+        ParamProbe.stepTexts(vst, p, texts -> {
+            if (getContext() == null) return;
+            ui.post(() -> {
+                busy.dismiss();
+                if (texts == null) { toast("无法读取可选值"); return; }
+                showChoices(p, texts);
+            });
+        });
+    }
+
+    private void showChoices(final Param p, String[] texts) {
+        Context c = getContext();
+        if (c == null || texts.length == 0) return;
+        int idx = Math.round(p.norm * (texts.length - 1));
+        idx = Math.max(0, Math.min(texts.length - 1, idx));
+        new AlertDialog.Builder(c)
+                .setTitle(p.name)
+                .setSingleChoiceItems(texts, idx, (d, which) -> {
+                    vst.setParam(p.id, p.normOfStep(which));
+                    d.dismiss();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** "3.0" for 3.004, "-96" for -96.0: enough digits to see the value, no noise. */
+    private static String trimNumber(double v) {
+        String s = String.format(Locale.US, "%.6f", v);
+        s = s.replaceAll("0+$", "");
+        if (s.endsWith(".")) s = s.substring(0, s.length() - 1);
+        return s;
     }
 
     public void onRenderProgress(int pct) {
@@ -449,16 +558,24 @@ public class VstView extends LinearLayout {
         adapter.notifyDataSetChanged();
     }
 
-    /** The three controls of one parameter row, kept across adapter recycles. */
+    /** How a parameter is presented: the host reports the step count that decides it. */
+    private static final int KIND_SLIDER = 0, KIND_SWITCH = 1, KIND_CHOICE = 2;
+
+    /** Every control a parameter row can show, kept across adapter recycles. */
     private static final class Row {
         Param p;
         TextView name;
         TextView val;
         Icon star;
         Slider slider;
+        /** 2-position parameters get a real switch instead of a slider with two stops. */
+        android.widget.Switch toggle;
+        /** 3..N position parameters get a chip that opens the plugin's own list of names. */
+        TextView choice;
         boolean starOn;
-        /** Last whole percent shown while dragging; -1 when nothing was shown yet. */
-        int pct = -1;
+        /** True while the row writes a value into its own views, so listeners stay quiet. */
+        boolean binding;
+        int kind = -1;
     }
 
     private class ParamAdapter extends BaseAdapter {
@@ -501,23 +618,40 @@ public class VstView extends LinearLayout {
                 row.slider = new Slider(c).accent(Ui.ACC).thick(4f, 0f);
                 row.slider.onChange(new Slider.OnChange() {
                     @Override public void onChanging(float v) {
-                        if (row.p != null) draggingParamId = row.p.id;
-                        int pct = Math.round(v * 100f);
-                        if (pct != row.pct) {
-                            row.pct = pct;
-                            row.val.setText(String.format(Locale.US, "%.0f%%", v * 100));
-                        }
+                        if (row.p == null) return;
+                        draggingParamId = row.p.id;
+                        // The ack of this SET carries the plugin's own text, so the label shows
+                        // "-3.5 dB" while the thumb moves instead of a percentage of the range.
+                        vst.setParam(row.p.id, v);
                     }
                     @Override public void onChanged(float v) {
                         if (row.p == null) return;
                         draggingParamId = null;
                         row.p.norm = v;
-                        Diag.log("drag " + row.p.name + " " + v);
                         vst.setParam(row.p.id, v);
                     }
                 });
                 root.addView(row.slider, new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT,
                         Ui.dp(c, 30)));
+
+                row.toggle = new android.widget.Switch(c);
+                // The row already prints the plugin's own text ("ON", "Cartesian"), so the switch
+                // itself stays a bare track and does not repeat it.
+                row.toggle.setText("");
+                row.toggle.setPadding(0, Ui.dp(c, 2), 0, Ui.dp(c, 2));
+                row.toggle.setOnCheckedChangeListener((b, checked) -> {
+                    Param q = row.p;
+                    if (row.binding || q == null) return;
+                    q.norm = checked ? 1f : 0f;
+                    vst.setParam(q.id, q.norm);
+                });
+                root.addView(row.toggle, new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT,
+                        LayoutParams.WRAP_CONTENT));
+
+                row.choice = Ui.tv(c, "", 13, Ui.ACC, true);
+                row.choice.setPadding(Ui.dp(c, 2), Ui.dp(c, 6), Ui.dp(c, 2), Ui.dp(c, 6));
+                root.addView(row.choice, new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT,
+                        LayoutParams.WRAP_CONTENT));
 
                 row.star.setOnClickListener(v -> {
                     if (row.p == null) return;
@@ -530,16 +664,26 @@ public class VstView extends LinearLayout {
 
             boolean rebind = row.p != p;
             row.p = p;
-            if (rebind) row.pct = -1;
             row.name.setText(p.name);
-            row.val.setText(p.valueText());
             boolean starOn = favs.contains(p.id);
             if (row.starOn != starOn) {
                 row.starOn = starOn;
                 row.star.name(starOn ? "starOn" : "star").tint(starOn ? Ui.ACC : Ui.SUB2);
             }
+            int kind = p.isSwitch() ? KIND_SWITCH : p.isChoice() ? KIND_CHOICE : KIND_SLIDER;
+            if (row.kind != kind) {
+                row.kind = kind;
+                row.slider.setVisibility(kind == KIND_SLIDER ? VISIBLE : GONE);
+                row.toggle.setVisibility(kind == KIND_SWITCH ? VISIBLE : GONE);
+                row.choice.setVisibility(kind == KIND_CHOICE ? VISIBLE : GONE);
+                // A choice row prints its value in the chip, so the header copy would just repeat it.
+                row.val.setVisibility(kind == KIND_CHOICE ? INVISIBLE : VISIBLE);
+            }
+            bindRow(row);
+            row.val.setOnClickListener(v -> askNumber(row.p));
+            row.choice.setOnClickListener(v -> askChoice(row.p));
             // Re-assigning the value while the user drags this very row would fight the thumb.
-            if (rebind) row.slider.setValue(p.norm);
+            if (rebind && kind == KIND_SLIDER) row.slider.setValue(p.norm);
             return root;
         }
     }

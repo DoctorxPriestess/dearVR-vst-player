@@ -638,6 +638,34 @@ public class Vst implements Engine.Listener {
         flushParams();
     }
 
+    /**
+     * Sends one SET immediately, outside the coalescing queue, and reports the plugin's own text.
+     *
+     * <p>The probe uses this: it needs the answer for one specific position, not the most recent
+     * value, and it must not publish forty status updates while it walks a parameter.
+     */
+    public void setParamProbe(String id, float norm, java.util.function.Consumer<String> cb) {
+        if (state != READY || renderPct >= 0) { if (cb != null) cb.accept(null); return; }
+        exec("SET|" + id + "|" + String.format(Locale.US, "%.6f", norm), (ok, msg) -> {
+            if (cb != null) cb.accept(ok ? msg : null);
+        });
+    }
+
+    /** As {@link #setParamProbe} but the answer also becomes the parameter's displayed value. */
+    public void setParamNow(String id, float norm, java.util.function.Consumer<String> cb) {
+        if (state != READY || renderPct >= 0) { if (cb != null) cb.accept(null); return; }
+        synchronized (applied) { applied.put(id, norm); }
+        exec("SET|" + id + "|" + String.format(Locale.US, "%.6f", norm), (ok, msg) -> {
+            if (ok) applyText(id, msg);
+            if (cb != null) cb.accept(ok ? msg : null);
+        });
+    }
+
+    /** True when a parameter command cannot disturb a running render. */
+    public boolean paramsIdle() {
+        return state == READY && renderPct < 0;
+    }
+
     private void flushParams() {
         String id;
         float val;

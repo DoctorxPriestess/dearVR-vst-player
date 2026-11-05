@@ -239,29 +239,9 @@ public class DetailPage extends FrameLayout implements Player.Listener {
 
         buildPills();
 
-        // transparent handle over the title band: pull down to dismiss (works with an empty queue too)
-        View handle = new View(c);
-        handle.setOnTouchListener(new View.OnTouchListener() {
-            private float y0, x0;
-            @Override public boolean onTouch(View v, MotionEvent e) {
-                switch (e.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        y0 = e.getY();
-                        x0 = e.getX();
-                        return true;
-                    case MotionEvent.ACTION_MOVE:
-                        float dy = e.getY() - y0;
-                        if (dy > Ui.dp(getContext(), 56) && dy > Math.abs(e.getX() - x0) * 1.5f) {
-                            host.closeDetail();
-                        }
-                        return true;
-                    default:
-                        return false;
-                }
-            }
-        });
-        addView(handle, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                Ui.dp(c, 150), Gravity.TOP));
+        // Pull-down-to-dismiss lives in onInterceptTouchEvent, which only claims gestures that
+        // start on the header row. A transparent 150 dp overlay used to sit here and swallowed
+        // every touch in the top band of the page, which is exactly where the loop pills are.
     }
 
     private void restoreAll() {

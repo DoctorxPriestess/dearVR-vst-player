@@ -14,8 +14,8 @@ android {
         applicationId = "com.vstplayer"
         minSdk = 24
         targetSdk = 28
-        versionCode = 4
-        versionName = "0.4"
+        versionCode = 5
+        versionName = "0.5"
 
         ndk {
             // Native ALAC/FLAC decoder and the FLAC encoder; arm64 devices are the target.

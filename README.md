@@ -11,9 +11,14 @@ It achieves this by running a full multi-tier guest compatibility stack directly
 
 The release APK is completely self-contained (~280 MB): it carries the compressed guest rootfs, Box64, Wine, and the plugin payload as assets, extracting them on first launch with zero additional downloads required.
 
-> **Download the [latest release](../../releases/latest) only.** `v0.2` and `v0.3` shipped a
-> crash — every render of a batch failed, and retrying the batch killed the app with an NPE in
-> the engine reader. Both are marked as pre-releases, carry a warning, and are not supported.
+> **Download the [latest release](../../releases/latest) only.**
+>
+> - `v0.2` and `v0.3` shipped a crash — every render of a batch failed, and retrying the batch
+>   killed the app with an NPE in the engine reader.
+> - `v0.4` could not scroll a playlist or the detail queue, its loop-mode pills did not react to
+>   taps, and the parameter panel showed normalized percentages with no way to type a value.
+>
+> All of them are marked as pre-releases, carry a warning, and are not supported.
 
 ```
 +-----------------------------------------------------------------------------------+
@@ -240,9 +245,14 @@ Refer to `docs/BENCHMARKS.md` for performance baselines across reference devices
 
 发布版 APK 具备完全自包含能力（约 280 MB）：内置 Linux rootfs、Box64、Wine 及插件资源分卷，首次运行时在后台自动解压，无需联网二次下载。
 
-> **只下载[最新发布版](../../releases/latest)。** `v0.2` 与 `v0.3` 都存在闪退缺陷：整批渲染
-> 会全部失败，反复重试后 App 因引擎读取线程空指针直接崩溃。这两个版本已标记为 pre-release
-> 并加了警告，不再提供支持。
+> **只下载[最新发布版](../../releases/latest)。**
+>
+> - `v0.2` 与 `v0.3` 存在闪退缺陷：整批渲染会全部失败，反复重试后 App 因引擎读取线程空指针
+>   直接崩溃。
+> - `v0.4` 的播放列表与详情页队列无法滚动，循环方式胶囊点不动，参数面板只显示归一化百分比
+>   且无法手动输入数值。
+>
+> 这些版本都已标记为 pre-release 并加了警告，不再提供支持。
 
 ---
 
